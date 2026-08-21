@@ -30,6 +30,14 @@ An advanced hardware telemetry monitor, power governor tuner, fan controller, an
   <img src="screenshots/hardware.png" alt="OmaGPU Hardware & Process Clients" width="280">
 </p>
 
+## Multi-Vendor Hardware Support
+
+| Vendor | Driver / Interface | Telemetry & Controls Supported |
+| :--- | :--- | :--- |
+| **AMD** | `amdgpu` (DRM sysfs & hwmon) | GPU %, VRAM / GTT, Core & Hotspot Temp, Fan PWM, DPM Power States, Power Cap. |
+| **NVIDIA** | `nvidia` (NVML / nvidia-smi) | GPU %, VRAM, Core & Hotspot Temp, Fan Speed, Power Draw (Watts), Clock Frequencies. |
+| **Intel** | `i915` / `xe` (DRM sysfs) | Frequency Scaling (RP0/RPe/RPn), RC6 Power States, Package Temp, Arc Dedicated/Shared VRAM. |
+
 ## Install
 
 OmaGPU requires Omarchy with shell plugin support.
@@ -76,6 +84,16 @@ omarchy restart shell
 | **Low Power / Silent** | `low` | Locks clocks to lowest P-states for silent fan operation and battery saving. |
 | **Peak Profile** | `profile_peak` | Forces highest power envelope for compute and heavy rendering. |
 
+## Optional: Instant Passwordless Tuning (Udev Rule)
+
+By default, applying fan and power governor overrides invokes `pkexec` for secure authentication. If you want instant one-click tuning without password prompts, apply this standard rule:
+
+```bash
+echo 'SUBSYSTEM=="drm", KERNEL=="card*", ACTION=="add", RUN+="/bin/chmod a+w /sys/class/drm/%k/device/power_dpm_force_performance_level"' | sudo tee /etc/udev/rules.d/99-gpu-tuning.rules
+echo 'SUBSYSTEM=="hwmon", ACTION=="add", RUN+="/bin/chmod a+w /sys/class/hwmon/%k/pwm1 /sys/class/hwmon/%k/pwm1_enable"' | sudo tee -a /etc/udev/rules.d/99-gpu-tuning.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
 ## Update
 
 ```sh
@@ -93,6 +111,14 @@ Removing the plugin unregisters the widget from your bar and removes its checkou
 ## Privacy & Security
 
 All telemetry inspection stays 100% on-device. The plugin does not connect to external networks, collect credentials, or transmit telemetry. All UI text rendering explicitly enforces `textFormat: Text.PlainText` to prevent rich-text parsing.
+
+## Development
+
+Validate the plugin schema from a checkout:
+
+```sh
+omarchy plugin validate .
+```
 
 ## License
 
