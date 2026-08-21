@@ -27,7 +27,10 @@ Panel {
   property int selectedGpuIndex: 0
   readonly property var currentGpu: (gpus && gpus.length > selectedGpuIndex) ? gpus[selectedGpuIndex] : ({})
 
-  property var history: ({ temps: [], vram: [], gpu_busy: [] })
+  property var histories: ({})
+  readonly property var history: (currentGpu && currentGpu.id && histories[currentGpu.id])
+    ? histories[currentGpu.id]
+    : ({ temps: [], vram: [], gpu_busy: [] })
   property var processes: []
   property var software: ({ vulkan: "Vulkan 1.3", opengl: "OpenGL 4.6", driver: "amdgpu" })
   property string lastUpdateTime: ""
@@ -55,6 +58,17 @@ Panel {
     pollProc.running = true
   }
 
+  function selectGpu(delta) {
+    if (!gpus || gpus.length < 2) return
+    selectedGpuIndex = (selectedGpuIndex + delta + gpus.length) % gpus.length
+    if (historyCanvas) historyCanvas.requestPaint()
+  }
+
+  function metricText(value, suffix) {
+    if (value === null || value === undefined || isNaN(value)) return "N/A"
+    return value + (suffix || "")
+  }
+
   function setPowerProfile(level) {
     if (!currentGpu || !currentGpu.id) return
     controlProc.command = ["python3", Qt.resolvedUrl("scripts/gpu_engine.py").toString().replace(/^file:\/\//, ""), "--set-power-profile", currentGpu.id, level]
@@ -73,7 +87,14 @@ Panel {
     try {
       var data = JSON.parse(text)
       root.gpus = data.gpus || []
-      root.history = data.history || ({ temps: [], vram: [], gpu_busy: [] })
+      if (root.selectedGpuIndex >= root.gpus.length) root.selectedGpuIndex = 0
+      if (data.histories) {
+        root.histories = data.histories
+      } else {
+        var legacyHistories = ({})
+        if (data.primary && data.primary.id) legacyHistories[data.primary.id] = data.history
+        root.histories = legacyHistories
+      }
       root.processes = data.processes || []
       root.software = data.software || ({})
       root.lastUpdateTime = data.timestamp || ""
@@ -169,6 +190,8 @@ Panel {
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
         if (t === "r" || t === "R") root.refresh()
+        else if (t === "[") root.selectGpu(-1)
+        else if (t === "]") root.selectGpu(1)
       }
 
       Column {
@@ -203,7 +226,7 @@ Panel {
             id: heroLabels
             anchors.left: heroIcon.right
             anchors.leftMargin: Style.space(12)
-            anchors.right: heroAction.left
+            anchors.right: heroActions.left
             anchors.rightMargin: Style.space(8)
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.space(2)
@@ -252,22 +275,53 @@ Panel {
             }
           }
 
-          PanelActionButton {
-            id: heroAction
+          Row {
+            id: heroActions
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
-            iconText: ""
-            tooltipText: root.isUpdating ? "Updating telemetry..." : "Refresh Telemetry ('R')"
-            foreground: root.isUpdating ? Color.accent : root.foreground
-            rotation: 0
-            onClicked: root.refresh()
+            spacing: Style.space(3)
 
-            RotationAnimation on rotation {
-              from: 0
-              to: 360
-              duration: 800
-              loops: Animation.Infinite
-              running: root.isUpdating
+            PanelActionButton {
+              visible: root.gpus.length > 1
+              iconText: ""
+              tooltipText: "Previous GPU ('[')"
+              foreground: root.foreground
+              onClicked: root.selectGpu(-1)
+            }
+
+            Text {
+              visible: root.gpus.length > 1
+              anchors.verticalCenter: parent.verticalCenter
+              text: "GPU " + (root.selectedGpuIndex + 1) + "/" + root.gpus.length
+              color: Color.accent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+            }
+
+            PanelActionButton {
+              visible: root.gpus.length > 1
+              iconText: ""
+              tooltipText: "Next GPU (']')"
+              foreground: root.foreground
+              onClicked: root.selectGpu(1)
+            }
+
+            PanelActionButton {
+              id: heroAction
+              iconText: ""
+              tooltipText: root.isUpdating ? "Updating telemetry..." : "Refresh Telemetry ('R')"
+              foreground: root.isUpdating ? Color.accent : root.foreground
+              rotation: 0
+              onClicked: root.refresh()
+
+              RotationAnimation on rotation {
+                from: 0
+                to: 360
+                duration: 800
+                loops: Animation.Infinite
+                running: root.isUpdating
+              }
             }
           }
         }
@@ -385,7 +439,7 @@ Panel {
 
                 Text {
                   textFormat: Text.PlainText
-                  text: (currentGpu.thermal ? currentGpu.thermal.coreTemp : 0.0) + " °C"
+                  text: root.metricText(currentGpu.thermal ? currentGpu.thermal.coreTemp : null, " °C")
                   color: (currentGpu.thermal && currentGpu.thermal.coreTemp >= 80) ? root.urgent : root.foreground
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.title
@@ -394,7 +448,7 @@ Panel {
 
                 Text {
                   textFormat: Text.PlainText
-                  text: "Hotspot: " + (currentGpu.thermal ? currentGpu.thermal.hotspotTemp : 0.0) + " °C"
+                  text: "Hotspot: " + root.metricText(currentGpu.thermal ? currentGpu.thermal.hotspotTemp : null, " °C")
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
@@ -504,7 +558,7 @@ Panel {
 
                 Text {
                   textFormat: Text.PlainText
-                  text: (currentGpu.thermal ? currentGpu.thermal.fanPwmPercent : 0) + " %"
+                  text: root.metricText(currentGpu.thermal ? currentGpu.thermal.fanPwmPercent : null, " %")
                   color: (currentGpu.thermal && currentGpu.thermal.fanPwmPercent >= 85) ? root.urgent : root.foreground
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.title
@@ -571,7 +625,7 @@ Panel {
 
                 Text {
                   textFormat: Text.PlainText
-                  text: "Draw: " + (currentGpu.thermal ? currentGpu.thermal.powerWatts : 25) + " W"
+                  text: "Draw: " + root.metricText(currentGpu.thermal ? currentGpu.thermal.powerWatts : null, " W")
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
@@ -1007,7 +1061,9 @@ Panel {
         Text {
           textFormat: Text.PlainText
           width: parent.width
-          text: "Tip: Press 'R' to refresh · Click any power or fan preset to apply tuning instantly"
+          text: root.gpus.length > 1
+            ? "Tip: Use '[' and ']' or the header arrows to switch GPUs · Press 'R' to refresh"
+            : "Tip: Press 'R' to refresh · Click any power or fan preset to apply tuning instantly"
           color: Qt.darker(root.dim, 1.3)
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption

@@ -5,6 +5,7 @@ LACT-inspired GPU monitoring, power tuning, fan control, and software inspector.
 Supports AMD (amdgpu), NVIDIA (nvidia-smi/NVML), and Intel (i915/xe) graphics.
 """
 
+import csv
 import sys
 import os
 import re
@@ -17,6 +18,26 @@ HOME = Path.home()
 HISTORY_FILE = HOME / ".config" / "omarchy" / "omagpu_history.json"
 MAX_HISTORY_POINTS = 30
 
+NVIDIA_QUERY_FIELDS = (
+    "index",
+    "pci.bus_id",
+    "uuid",
+    "gpu_name",
+    "driver_version",
+    "vbios_version",
+    "memory.used",
+    "memory.total",
+    "utilization.gpu",
+    "temperature.gpu",
+    "fan.speed",
+    "power.draw",
+    "power.limit",
+    "clocks.current.graphics",
+    "clocks.current.memory",
+    "pcie.link.gen.current",
+    "pcie.link.width.current",
+)
+
 def read_sysfs(path):
     try:
         p = Path(path)
@@ -25,6 +46,110 @@ def read_sysfs(path):
     except Exception:
         pass
     return None
+
+def parse_optional_float(value):
+    value = value.strip()
+    if not value or value.lower() in {"n/a", "not supported", "[not supported]", "unknown"}:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+def parse_optional_int(value):
+    parsed = parse_optional_float(value)
+    return int(parsed) if parsed is not None else None
+
+def normalize_pci_bus_id(value):
+    parts = value.strip().upper().split(":")
+    if len(parts) == 3:
+        parts[0] = parts[0].zfill(8)
+    return ":".join(parts)
+
+def parse_nvidia_smi_output(output):
+    """Convert one nvidia-smi CSV row per device into OmaGPU records."""
+    gpus = []
+    for parts in csv.reader(output.splitlines(), skipinitialspace=True):
+        if not parts or len(parts) != len(NVIDIA_QUERY_FIELDS):
+            continue
+
+        values = dict(zip(NVIDIA_QUERY_FIELDS, (part.strip() for part in parts)))
+        index = parse_optional_int(values["index"])
+        if index is None:
+            continue
+
+        vram_used = parse_optional_float(values["memory.used"])
+        vram_total = parse_optional_float(values["memory.total"])
+        vram_percent = (
+            round((vram_used / vram_total) * 100, 1)
+            if vram_used is not None and vram_total
+            else 0
+        )
+        pcie_gen = parse_optional_int(values["pcie.link.gen.current"])
+        pcie_width = parse_optional_int(values["pcie.link.width.current"])
+        pcie = "N/A"
+        if pcie_gen is not None and pcie_width is not None:
+            pcie = f"PCIe Gen {pcie_gen} x{pcie_width}"
+
+        gpus.append({
+            "id": f"nvidia{index}",
+            "index": index,
+            "uuid": values["uuid"],
+            "pciBusId": normalize_pci_bus_id(values["pci.bus_id"]),
+            "drmCard": None,
+            "vendor": "NVIDIA",
+            "model": values["gpu_name"],
+            "driver": f"nvidia {values['driver_version']}",
+            "vbios": values["vbios_version"],
+            "isPrimary": index == 0,
+            "pcie": pcie,
+            "rebar": False,
+            "vram": {
+                "usedMb": vram_used if vram_used is not None else 0,
+                "totalMb": vram_total if vram_total is not None else 0,
+                "percent": vram_percent,
+            },
+            "gtt": {"usedMb": 0, "totalMb": 0},
+            "gpuBusyPercent": parse_optional_int(values["utilization.gpu"]) or 0,
+            "memBusyPercent": 0,
+            "clocks": {
+                "graphicsMhz": parse_optional_int(values["clocks.current.graphics"]),
+                "memoryMhz": parse_optional_int(values["clocks.current.memory"]),
+            },
+            "thermal": {
+                "coreTemp": parse_optional_float(values["temperature.gpu"]),
+                "hotspotTemp": None,
+                "fanRpm": None,
+                "fanPwmPercent": parse_optional_int(values["fan.speed"]),
+                "powerWatts": parse_optional_float(values["power.draw"]),
+                "powerCapWatts": parse_optional_float(values["power.limit"]),
+            },
+            "tuning": {
+                "performanceLevel": "auto",
+                "activeProfile": "NVIDIA Managed",
+                "fanControlMode": "Automatic (NVIDIA)",
+            },
+        })
+
+    return gpus
+
+def query_nvidia_gpus():
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                f"--query-gpu={','.join(NVIDIA_QUERY_FIELDS)}",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+        if result.returncode == 0:
+            return parse_nvidia_smi_output(result.stdout)
+    except (FileNotFoundError, subprocess.SubprocessError):
+        pass
+    return []
 
 def detect_vulkan_version():
     try:
@@ -86,6 +211,9 @@ def get_gpu_processes():
 
 def scan_gpus():
     gpus = []
+    nvidia_gpus = query_nvidia_gpus()
+    nvidia_by_bus = {gpu["pciBusId"]: gpu for gpu in nvidia_gpus}
+    matched_nvidia_indices = set()
     drm_cards = sorted(Path("/sys/class/drm").glob("card[0-9]*"))
     actual_cards = [c for c in drm_cards if "-" not in c.name]
 
@@ -106,6 +234,15 @@ def scan_gpus():
             vendor_name = "NVIDIA"
         elif "0x8086" in vendor_id.lower():
             vendor_name = "Intel"
+
+        pci_bus_id = normalize_pci_bus_id(dev_path.resolve().name)
+        if vendor_name == "NVIDIA" and pci_bus_id in nvidia_by_bus:
+            nvidia_gpu = dict(nvidia_by_bus[pci_bus_id])
+            nvidia_gpu["drmCard"] = card.name
+            nvidia_gpu["isPrimary"] = boot_vga
+            gpus.append(nvidia_gpu)
+            matched_nvidia_indices.add(nvidia_gpu["index"])
+            continue
 
         model_name = f"{vendor_name} Graphics ({device_id})"
         try:
@@ -208,6 +345,10 @@ def scan_gpus():
 
         gpus.append({
             "id": card.name,
+            "index": len(gpus),
+            "uuid": None,
+            "pciBusId": pci_bus_id,
+            "drmCard": card.name,
             "vendor": vendor_name,
             "model": model_name,
             "driver": driver_sym,
@@ -241,78 +382,51 @@ def scan_gpus():
             }
         })
 
-    # NVIDIA Fallback
-    if not any(g["vendor"] == "NVIDIA" for g in gpus):
-        try:
-            res = subprocess.run(["nvidia-smi", "--query-gpu=gpu_name,driver_version,vbios_version,memory.used,memory.total,utilization.gpu,temperature.gpu,fan.speed,power.draw", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=1.0)
-            if res.returncode == 0:
-                parts = [p.strip() for p in res.stdout.strip().split(",")]
-                if len(parts) >= 8:
-                    gpus.append({
-                        "id": "nvidia0",
-                        "vendor": "NVIDIA",
-                        "model": parts[0],
-                        "driver": f"nvidia {parts[1]}",
-                        "vbios": parts[2],
-                        "isPrimary": True,
-                        "pcie": "PCIe Gen 4 x16",
-                        "rebar": True,
-                        "vram": {
-                            "usedMb": float(parts[3]),
-                            "totalMb": float(parts[4]),
-                            "percent": round((float(parts[3])/float(parts[4]))*100, 1)
-                        },
-                        "gtt": {"usedMb": 0, "totalMb": 0},
-                        "gpuBusyPercent": int(parts[5]),
-                        "memBusyPercent": 0,
-                        "thermal": {
-                            "coreTemp": float(parts[6]),
-                            "hotspotTemp": float(parts[6]) + 8.0,
-                            "fanRpm": None,
-                            "fanPwmPercent": int(parts[7]) if parts[7].isdigit() else 40,
-                            "powerWatts": float(parts[8]) if len(parts) > 8 else 50.0,
-                            "powerCapWatts": 250.0
-                        },
-                        "tuning": {
-                            "performanceLevel": "auto",
-                            "activeProfile": "Auto (Dynamic)",
-                            "fanControlMode": "Automatic"
-                        }
-                    })
-        except Exception:
-            pass
+    # Keep devices visible even when DRM has no card node for one of them.
+    for nvidia_gpu in nvidia_gpus:
+        if nvidia_gpu["index"] not in matched_nvidia_indices:
+            gpus.append(nvidia_gpu)
 
     return gpus
 
-def update_history(primary_gpu):
-    history = {"temps": [], "vram": [], "gpu_busy": []}
+def empty_history():
+    return {"temps": [], "vram": [], "gpu_busy": []}
+
+def update_histories(gpus):
+    histories = {}
     if HISTORY_FILE.exists():
         try:
-            history = json.loads(HISTORY_FILE.read_text())
+            saved = json.loads(HISTORY_FILE.read_text())
+            if isinstance(saved.get("gpus"), dict):
+                histories = saved["gpus"]
+            elif gpus and all(key in saved for key in ("temps", "vram", "gpu_busy")):
+                histories[gpus[0]["id"]] = saved
         except Exception:
-            history = {"temps": [], "vram": [], "gpu_busy": []}
+            histories = {}
 
-    temp_val = primary_gpu["thermal"]["coreTemp"]
-    vram_val = primary_gpu["vram"]["percent"]
-    gpu_busy_val = primary_gpu["gpuBusyPercent"]
+    active_ids = {gpu["id"] for gpu in gpus}
+    histories = {gpu_id: history for gpu_id, history in histories.items() if gpu_id in active_ids}
+    for gpu in gpus:
+        history = histories.setdefault(gpu["id"], empty_history())
+        temp_val = gpu["thermal"].get("coreTemp")
+        if temp_val is not None:
+            history["temps"].append(temp_val)
+        history["vram"].append(gpu["vram"]["percent"])
+        history["gpu_busy"].append(gpu["gpuBusyPercent"])
 
-    history["temps"].append(temp_val)
-    history["vram"].append(vram_val)
-    history["gpu_busy"].append(gpu_busy_val)
-
-    history["temps"] = history["temps"][-MAX_HISTORY_POINTS:]
-    history["vram"] = history["vram"][-MAX_HISTORY_POINTS:]
-    history["gpu_busy"] = history["gpu_busy"][-MAX_HISTORY_POINTS:]
+        history["temps"] = history["temps"][-MAX_HISTORY_POINTS:]
+        history["vram"] = history["vram"][-MAX_HISTORY_POINTS:]
+        history["gpu_busy"] = history["gpu_busy"][-MAX_HISTORY_POINTS:]
 
     try:
         HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
         tmp = HISTORY_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(history))
+        tmp.write_text(json.dumps({"version": 2, "gpus": histories}))
         os.replace(tmp, HISTORY_FILE)
     except Exception:
         pass
 
-    return history
+    return histories
 
 def set_performance_level(card_id, level):
     allowed_levels = {"auto", "low", "high", "profile_peak", "manual", "profile_standard", "profile_min_sclk", "profile_min_mclk"}
@@ -415,7 +529,8 @@ def main():
         "tuning": {"performanceLevel": "auto", "activeProfile": "Auto (Dynamic)", "fanControlMode": "Automatic"}
     }
 
-    history = update_history(primary)
+    histories = update_histories(gpus)
+    history = histories.get(primary["id"], empty_history())
     processes = get_gpu_processes()
     vulkan_ver = detect_vulkan_version()
     opengl_ver = detect_opengl_version()
@@ -426,6 +541,7 @@ def main():
         "gpus": gpus,
         "primary": primary,
         "history": history,
+        "histories": histories,
         "processes": processes,
         "software": {
             "vulkan": vulkan_ver,
