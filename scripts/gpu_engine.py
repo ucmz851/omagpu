@@ -52,7 +52,6 @@ def get_gpu_processes():
     processes = []
     seen_pids = set()
     try:
-        # Check /dev/dri/render nodes
         render_nodes = list(Path("/dev/dri").glob("renderD*"))
         for node in render_nodes:
             res = subprocess.run(["fuser", str(node)], capture_output=True, text=True, timeout=0.8)
@@ -61,12 +60,9 @@ def get_gpu_processes():
                 pid = pid.strip()
                 if pid and pid.isdigit() and pid not in seen_pids:
                     seen_pids.add(pid)
-                    # Get process name and memory info
                     comm_path = Path(f"/proc/{pid}/comm")
-                    cmdline_path = Path(f"/proc/{pid}/cmdline")
                     name = comm_path.read_text().strip() if comm_path.exists() else "Unknown"
                     
-                    # Read RSS memory as baseline
                     mem_mb = 0
                     statm_path = Path(f"/proc/{pid}/statm")
                     if statm_path.exists():
@@ -85,15 +81,12 @@ def get_gpu_processes():
     except Exception:
         pass
 
-    # Sort by memory descending
     processes.sort(key=lambda x: x["mem_mb"], reverse=True)
     return processes[:8]
 
 def scan_gpus():
     gpus = []
     drm_cards = sorted(Path("/sys/class/drm").glob("card[0-9]*"))
-    
-    # Exclude display port subnodes like card1-DP-1
     actual_cards = [c for c in drm_cards if "-" not in c.name]
 
     for card in actual_cards:
@@ -103,12 +96,9 @@ def scan_gpus():
 
         vendor_id = read_sysfs(dev_path / "vendor") or "Unknown"
         device_id = read_sysfs(dev_path / "device") or "Unknown"
-        subsystem_vendor = read_sysfs(dev_path / "subsystem_vendor") or "Unknown"
-        subsystem_device = read_sysfs(dev_path / "subsystem_device") or "Unknown"
         driver_sym = (dev_path / "driver").resolve().name if (dev_path / "driver").exists() else "Unknown"
         boot_vga = read_sysfs(dev_path / "boot_vga") == "1"
 
-        # Determine Vendor Name
         vendor_name = "Generic"
         if "0x1002" in vendor_id.lower():
             vendor_name = "AMD"
@@ -117,7 +107,6 @@ def scan_gpus():
         elif "0x8086" in vendor_id.lower():
             vendor_name = "Intel"
 
-        # Resolve marketing model name
         model_name = f"{vendor_name} Graphics ({device_id})"
         try:
             lspci_res = subprocess.run(["lspci", "-s", dev_path.resolve().name.split(":")[-1] if ":" in dev_path.resolve().name else "01:00.0"], capture_output=True, text=True, timeout=1.0)
@@ -132,7 +121,6 @@ def scan_gpus():
         except Exception:
             pass
 
-        # VBIOS & PCIe Info
         vbios = read_sysfs(dev_path / "vbios_version") or "Standard VBIOS"
         cur_link_speed = read_sysfs(dev_path / "current_link_speed") or "PCIe Gen 3"
         cur_link_width = read_sysfs(dev_path / "current_link_width") or "x8"
@@ -140,7 +128,6 @@ def scan_gpus():
         max_link_width = read_sysfs(dev_path / "max_link_width") or "x16"
         pcie_info = f"{cur_link_speed} {cur_link_width} (Max: {max_link_speed} {max_link_width})"
 
-        # VRAM & GTT Metrics
         vram_used_bytes = int(read_sysfs(dev_path / "mem_info_vram_used") or 0)
         vram_total_bytes = int(read_sysfs(dev_path / "mem_info_vram_total") or (1024 * 1024 * 1024))
         vram_used_mb = round(vram_used_bytes / (1024 * 1024), 1)
@@ -152,14 +139,12 @@ def scan_gpus():
         gtt_used_mb = round(gtt_used_bytes / (1024 * 1024), 1)
         gtt_total_mb = round(gtt_total_bytes / (1024 * 1024), 1)
 
-        # GPU / Mem Busy Percent
         gpu_busy = read_sysfs(dev_path / "gpu_busy_percent")
         gpu_busy_pct = int(gpu_busy) if gpu_busy and gpu_busy.isdigit() else None
 
         mem_busy = read_sysfs(dev_path / "mem_busy_percent")
         mem_busy_pct = int(mem_busy) if mem_busy and mem_busy.isdigit() else None
 
-        # Hwmon Sensors (Temperature, Fan RPM & PWM, Power)
         hwmon_dirs = list(dev_path.glob("hwmon/hwmon*"))
         temp_c = None
         hotspot_c = None
@@ -167,20 +152,18 @@ def scan_gpus():
         fan_pwm = None
         power_watts = None
         power_cap_watts = None
+        fan_mode_val = "Automatic VBIOS"
 
         if hwmon_dirs:
             hdir = hwmon_dirs[0]
-            # Temperature 1 (Edge / Core)
             t1 = read_sysfs(hdir / "temp1_input")
             if t1 and t1.isdigit():
                 temp_c = round(int(t1) / 1000, 1)
             
-            # Temperature 2 (Junction / Hotspot)
             t2 = read_sysfs(hdir / "temp2_input")
             if t2 and t2.isdigit():
                 hotspot_c = round(int(t2) / 1000, 1)
 
-            # Fan RPM & PWM
             f1 = read_sysfs(hdir / "fan1_input")
             if f1 and f1.isdigit():
                 fan_rpm = int(f1)
@@ -189,7 +172,12 @@ def scan_gpus():
             if pwm and pwm.isdigit():
                 fan_pwm = round((int(pwm) / 255.0) * 100)
 
-            # Power Draw
+            pwm_enable = read_sysfs(hdir / "pwm1_enable")
+            if pwm_enable == "1":
+                fan_mode_val = "Manual Fixed PWM"
+            elif pwm_enable == "2":
+                fan_mode_val = "Automatic VBIOS"
+
             p1 = read_sysfs(hdir / "power1_average") or read_sysfs(hdir / "power1_input")
             if p1 and p1.isdigit():
                 power_watts = round(int(p1) / 1000000.0, 1)
@@ -198,11 +186,9 @@ def scan_gpus():
             if pcap and pcap.isdigit():
                 power_cap_watts = round(int(pcap) / 1000000.0, 1)
 
-        # Performance Level & Power Profile
         perf_level = read_sysfs(dev_path / "power_dpm_force_performance_level") or "auto"
         power_profile = read_sysfs(dev_path / "pp_power_profile_mode") or "Default"
         
-        # Parse active profile mode from text
         active_profile_label = "Auto (Dynamic)"
         if "3D_FULL_SCREEN" in power_profile and "*" in power_profile.split("3D_FULL_SCREEN")[0]:
             active_profile_label = "3D Gaming"
@@ -214,8 +200,9 @@ def scan_gpus():
             active_profile_label = "High Performance"
         elif perf_level == "low":
             active_profile_label = "Low Power / Quiet"
+        elif perf_level == "profile_peak":
+            active_profile_label = "Peak Profile"
 
-        # Resizable BAR
         vis_vram = int(read_sysfs(dev_path / "mem_info_vis_vram_total") or 0)
         rebar_enabled = vis_vram >= vram_total_bytes and vram_total_bytes > 0
 
@@ -250,11 +237,11 @@ def scan_gpus():
             "tuning": {
                 "performanceLevel": perf_level,
                 "activeProfile": active_profile_label,
-                "fanControlMode": "Manual PWM" if (fan_pwm is not None and read_sysfs(dev_path / "hwmon/hwmon0/pwm1_enable") == "1") else "Automatic VBIOS"
+                "fanControlMode": fan_mode_val
             }
         })
 
-    # NVIDIA Fallback if no DRM cards matched NVIDIA
+    # NVIDIA Fallback
     if not any(g["vendor"] == "NVIDIA" for g in gpus):
         try:
             res = subprocess.run(["nvidia-smi", "--query-gpu=gpu_name,driver_version,vbios_version,memory.used,memory.total,utilization.gpu,temperature.gpu,fan.speed,power.draw", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=1.0)
@@ -328,30 +315,72 @@ def update_history(primary_gpu):
     return history
 
 def set_performance_level(card_id, level):
+    allowed_levels = {"auto", "low", "high", "profile_peak", "manual", "profile_standard", "profile_min_sclk", "profile_min_mclk"}
+    if level not in allowed_levels:
+        return {"status": "error", "message": f"Invalid DPM level: {level}"}
+
     dev_path = Path(f"/sys/class/drm/{card_id}/device/power_dpm_force_performance_level")
     if dev_path.exists():
-        cmd = f"echo '{level}' > {dev_path}"
+        # Try direct write first (fast path if udev permissions configured)
         try:
-            subprocess.run(["pkexec", "sh", "-c", cmd], check=True)
-            return {"status": "success", "level": level}
+            dev_path.write_text(level)
+            return {"status": "success", "level": level, "method": "direct"}
+        except (PermissionError, OSError):
+            # Fallback to pkexec
+            cmd = f"echo '{level}' > {dev_path}"
+            try:
+                subprocess.run(["pkexec", "sh", "-c", cmd], check=True, capture_output=True, text=True)
+                return {"status": "success", "level": level, "method": "pkexec"}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
+    # NVIDIA support
+    if card_id.startswith("nvidia"):
+        try:
+            if level == "high":
+                subprocess.run(["nvidia-smi", "-pm", "1"], check=True)
+            return {"status": "success", "level": level, "method": "nvidia-smi"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
+
     return {"status": "error", "message": "Sysfs performance node not found"}
 
 def set_fan_pwm(card_id, pwm_val):
     hwmon_dirs = list(Path(f"/sys/class/drm/{card_id}/device/hwmon").glob("hwmon*"))
     if hwmon_dirs:
         hdir = hwmon_dirs[0]
+        pwm_file = hdir / "pwm1"
+        pwm_enable_file = hdir / "pwm1_enable"
+
         if pwm_val == "auto":
-            cmd = f"echo '2' > {hdir}/pwm1_enable"
+            # Direct write
+            try:
+                pwm_enable_file.write_text("2")
+                return {"status": "success", "mode": "auto", "method": "direct"}
+            except (PermissionError, OSError):
+                cmd = f"echo '2' > {pwm_enable_file}"
+                try:
+                    subprocess.run(["pkexec", "sh", "-c", cmd], check=True, capture_output=True, text=True)
+                    return {"status": "success", "mode": "auto", "method": "pkexec"}
+                except Exception as e:
+                    return {"status": "error", "message": str(e)}
         else:
-            pwm_num = max(0, min(255, int(pwm_val)))
-            cmd = f"echo '1' > {hdir}/pwm1_enable && echo '{pwm_num}' > {hdir}/pwm1"
-        try:
-            subprocess.run(["pkexec", "sh", "-c", cmd], check=True)
-            return {"status": "success", "pwm": pwm_val}
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
+            try:
+                pwm_num = max(0, min(255, int(pwm_val)))
+            except ValueError:
+                return {"status": "error", "message": f"Invalid PWM value: {pwm_val}"}
+            try:
+                pwm_enable_file.write_text("1")
+                pwm_file.write_text(str(pwm_num))
+                return {"status": "success", "pwm": pwm_num, "method": "direct"}
+            except (PermissionError, OSError):
+                cmd = f"echo '1' > {pwm_enable_file} && echo '{pwm_num}' > {pwm_file}"
+                try:
+                    subprocess.run(["pkexec", "sh", "-c", cmd], check=True, capture_output=True, text=True)
+                    return {"status": "success", "pwm": pwm_num, "method": "pkexec"}
+                except Exception as e:
+                    return {"status": "error", "message": str(e)}
+
     return {"status": "error", "message": "Hwmon fan control node not found"}
 
 def main():

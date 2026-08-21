@@ -118,6 +118,22 @@ Panel {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
+        if (text && text.trim() !== "") {
+          try {
+            var res = JSON.parse(text)
+            if (res.status === "success") {
+              if (res.level) root.copiedNotice = "Applied Power Governor: " + res.level
+              else if (res.mode === "auto") root.copiedNotice = "Fan mode set to: Automatic VBIOS"
+              else if (res.pwm !== undefined) root.copiedNotice = "Fan speed set to PWM: " + res.pwm
+              noticeTimer.restart()
+            } else if (res.status === "error") {
+              root.copiedNotice = "Tuning Error: " + (res.message || "Permission denied")
+              noticeTimer.restart()
+            }
+          } catch (e) {
+            console.log("controlProc parse error:", e)
+          }
+        }
         root.refresh()
       }
     }
