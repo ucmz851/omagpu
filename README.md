@@ -96,15 +96,10 @@ omarchy restart shell
 | **Low Power / Silent** | `low` | Locks clocks to lowest P-states for silent fan operation and battery saving. |
 | **Peak Profile** | `profile_peak` | Forces highest power envelope for compute and heavy rendering. |
 
-## Optional: Instant Passwordless Tuning (Udev Rule)
+## Security & Privilege Model
 
-By default, applying fan and power governor overrides invokes `pkexec` for secure authentication. If you want instant one-click tuning without password prompts, apply this standard rule:
-
-```bash
-echo 'SUBSYSTEM=="drm", KERNEL=="card*", ACTION=="add", RUN+="/bin/chmod a+w /sys/class/drm/%k/device/power_dpm_force_performance_level"' | sudo tee /etc/udev/rules.d/99-gpu-tuning.rules
-echo 'SUBSYSTEM=="hwmon", ACTION=="add", RUN+="/bin/chmod a+w /sys/class/hwmon/%k/pwm1 /sys/class/hwmon/%k/pwm1_enable"' | sudo tee -a /etc/udev/rules.d/99-gpu-tuning.rules
-sudo udevadm control --reload-rules && sudo udevadm trigger
-```
+* **Telemetry Sampling:** 100% unprivileged. All GPU metrics, temperatures, VRAM, and process lists are read directly through standard unprivileged kernel sysfs and `/proc/` nodes with zero root requirements.
+* **Tuning Controls:** Applying fan speed overrides or DPM power governor changes prompts through standard desktop PolicyKit (`pkexec`) authentication to safely guard hardware configuration changes.
 
 ## Update
 
