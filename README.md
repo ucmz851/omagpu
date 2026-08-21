@@ -20,7 +20,7 @@ An advanced hardware telemetry dashboard, DPM power governor tuner, acoustic fan
 - **📈 Rolling Telemetry Sparklines:** Built-in 30-second live historical graph tracking temperature and VRAM spikes in real time.
 - **🧩 Graphics Stack & Topology:** Reports GPU Model, ASIC Family, VBIOS version, PCIe Link Speed/Width, Resizable BAR, Vulkan 1.3/1.4 instance versions, and Mesa/OpenGL versions.
 - **🔍 Active GPU Process Monitor:** Identifies live processes utilizing the `/dev/dri` render node (e.g. Hyprland, Chromium, Games) with dedicated RSS memory allocations.
-- **🖥️ Multi-GPU Selection:** Detects every NVIDIA adapter independently, matches DRM devices by PCI bus ID, and lets you switch live telemetry from the panel header.
+- **🖥️ Multi-GPU Selection:** Detects every NVIDIA adapter independently, matches DRM devices by PCI bus ID, and provides a dedicated in-panel device switcher.
 
 ## Screenshots
 

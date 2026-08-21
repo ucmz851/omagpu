@@ -69,6 +69,12 @@ Panel {
     return value + (suffix || "")
   }
 
+  function shortBusId(pciBusId) {
+    if (!pciBusId) return "PCI unknown"
+    var parts = pciBusId.split(":")
+    return parts.length >= 3 ? parts.slice(parts.length - 2).join(":") : pciBusId
+  }
+
   function setPowerProfile(level) {
     if (!currentGpu || !currentGpu.id) return
     controlProc.command = ["python3", Qt.resolvedUrl("scripts/gpu_engine.py").toString().replace(/^file:\/\//, ""), "--set-power-profile", currentGpu.id, level]
@@ -226,7 +232,7 @@ Panel {
             id: heroLabels
             anchors.left: heroIcon.right
             anchors.leftMargin: Style.space(12)
-            anchors.right: heroActions.left
+            anchors.right: heroAction.left
             anchors.rightMargin: Style.space(8)
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.space(2)
@@ -275,52 +281,78 @@ Panel {
             }
           }
 
-          Row {
-            id: heroActions
+          PanelActionButton {
+            id: heroAction
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.space(3)
+            iconText: ""
+            tooltipText: root.isUpdating ? "Updating telemetry..." : "Refresh Telemetry ('R')"
+            foreground: root.isUpdating ? Color.accent : root.foreground
+            rotation: 0
+            onClicked: root.refresh()
 
-            PanelActionButton {
-              visible: root.gpus.length > 1
-              iconText: ""
-              tooltipText: "Previous GPU ('[')"
-              foreground: root.foreground
-              onClicked: root.selectGpu(-1)
+            RotationAnimation on rotation {
+              from: 0
+              to: 360
+              duration: 800
+              loops: Animation.Infinite
+              running: root.isUpdating
             }
+          }
+        }
 
-            Text {
-              visible: root.gpus.length > 1
-              anchors.verticalCenter: parent.verticalCenter
-              text: "GPU " + (root.selectedGpuIndex + 1) + "/" + root.gpus.length
-              color: Color.accent
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              font.bold: true
-            }
+        // ------------------ GPU DEVICE SWITCHER ------------------
+        Row {
+          id: gpuSelectorRow
+          visible: root.gpus.length > 1
+          width: parent.width
+          spacing: Style.space(8)
 
-            PanelActionButton {
-              visible: root.gpus.length > 1
-              iconText: ""
-              tooltipText: "Next GPU (']')"
-              foreground: root.foreground
-              onClicked: root.selectGpu(1)
-            }
+          Repeater {
+            model: root.gpus
 
-            PanelActionButton {
-              id: heroAction
-              iconText: ""
-              tooltipText: root.isUpdating ? "Updating telemetry..." : "Refresh Telemetry ('R')"
-              foreground: root.isUpdating ? Color.accent : root.foreground
-              rotation: 0
-              onClicked: root.refresh()
+            delegate: BorderSurface {
+              readonly property bool isSelected: index === root.selectedGpuIndex
+              readonly property bool isHovered: gpuSelectorMouse.containsMouse
+              width: (gpuSelectorRow.width - gpuSelectorRow.spacing * (root.gpus.length - 1)) / root.gpus.length
+              implicitHeight: gpuSelectorLabel.implicitHeight + Style.space(10)
+              radius: Style.cornerRadius
+              color: isSelected
+                ? Style.selectedFillFor(root.foreground, root.foreground)
+                : (isHovered ? Style.hoverFillFor(root.foreground, root.foreground) : "transparent")
+              borderSpec: isSelected
+                ? Border.controlSpec("selected", Color.accent, Color.accent)
+                : Border.controlSpec("normal", root.dim, Color.accent)
 
-              RotationAnimation on rotation {
-                from: 0
-                to: 360
-                duration: 800
-                loops: Animation.Infinite
-                running: root.isUpdating
+              Row {
+                id: gpuSelectorLabel
+                anchors.centerIn: parent
+                spacing: Style.space(6)
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "GPU " + (index + 1)
+                  color: isSelected ? root.foreground : root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: isSelected
+                }
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: root.shortBusId(modelData.pciBusId)
+                  color: isSelected ? Color.accent : root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+              }
+
+              MouseArea {
+                id: gpuSelectorMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.selectedGpuIndex = index
               }
             }
           }
@@ -1062,7 +1094,7 @@ Panel {
           textFormat: Text.PlainText
           width: parent.width
           text: root.gpus.length > 1
-            ? "Tip: Use '[' and ']' or the header arrows to switch GPUs · Press 'R' to refresh"
+            ? "Tip: Choose a GPU above or use '[' and ']' · Press 'R' to refresh"
             : "Tip: Press 'R' to refresh · Click any power or fan preset to apply tuning instantly"
           color: Qt.darker(root.dim, 1.3)
           font.family: root.fontFamily

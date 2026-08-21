@@ -53,9 +53,10 @@ class PanelMultiGpuTests(unittest.TestCase):
         panel = (REPO_ROOT / "Panel.qml").read_text()
 
         self.assertIn("function selectGpu(delta)", panel)
-        self.assertIn('text: "GPU " + (root.selectedGpuIndex + 1) + "/" + root.gpus.length', panel)
-        self.assertIn("onClicked: root.selectGpu(-1)", panel)
-        self.assertIn("onClicked: root.selectGpu(1)", panel)
+        self.assertIn("id: gpuSelectorRow", panel)
+        self.assertIn('text: "GPU " + (index + 1)', panel)
+        self.assertIn("text: root.shortBusId(modelData.pciBusId)", panel)
+        self.assertIn("onClicked: root.selectedGpuIndex = index", panel)
 
 
 class LiveMultiGpuTests(unittest.TestCase):
