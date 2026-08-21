@@ -27,7 +27,10 @@ Panel {
   property int selectedGpuIndex: 0
   readonly property var currentGpu: (gpus && gpus.length > selectedGpuIndex) ? gpus[selectedGpuIndex] : ({})
 
-  property var history: ({ temps: [], vram: [], gpu_busy: [] })
+  property var histories: ({})
+  readonly property var history: (currentGpu && currentGpu.id && histories[currentGpu.id])
+    ? histories[currentGpu.id]
+    : ({ temps: [], vram: [], gpu_busy: [] })
   property var processes: []
   property var software: ({ vulkan: "Vulkan 1.3", opengl: "OpenGL 4.6", driver: "amdgpu" })
   property string lastUpdateTime: ""
@@ -55,6 +58,23 @@ Panel {
     pollProc.running = true
   }
 
+  function selectGpu(delta) {
+    if (!gpus || gpus.length < 2) return
+    selectedGpuIndex = (selectedGpuIndex + delta + gpus.length) % gpus.length
+    if (historyCanvas) historyCanvas.requestPaint()
+  }
+
+  function metricText(value, suffix) {
+    if (value === null || value === undefined || isNaN(value)) return "N/A"
+    return value + (suffix || "")
+  }
+
+  function shortBusId(pciBusId) {
+    if (!pciBusId) return "PCI unknown"
+    var parts = pciBusId.split(":")
+    return parts.length >= 3 ? parts.slice(parts.length - 2).join(":") : pciBusId
+  }
+
   function setPowerProfile(level) {
     if (!currentGpu || !currentGpu.id) return
     controlProc.command = ["python3", Qt.resolvedUrl("scripts/gpu_engine.py").toString().replace(/^file:\/\//, ""), "--set-power-profile", currentGpu.id, level]
@@ -73,7 +93,14 @@ Panel {
     try {
       var data = JSON.parse(text)
       root.gpus = data.gpus || []
-      root.history = data.history || ({ temps: [], vram: [], gpu_busy: [] })
+      if (root.selectedGpuIndex >= root.gpus.length) root.selectedGpuIndex = 0
+      if (data.histories) {
+        root.histories = data.histories
+      } else {
+        var legacyHistories = ({})
+        if (data.primary && data.primary.id) legacyHistories[data.primary.id] = data.history
+        root.histories = legacyHistories
+      }
       root.processes = data.processes || []
       root.software = data.software || ({})
       root.lastUpdateTime = data.timestamp || ""
@@ -148,6 +175,8 @@ Panel {
     }
   }
 
+  onActiveTabChanged: if (panelFlick) panelFlick.contentY = 0
+
   Component.onCompleted: root.refresh()
 
   KeyboardPanel {
@@ -167,16 +196,32 @@ Panel {
 
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
+      onMoveRequested: function(dx, dy) {
+        if (dy === 0) return
+        var maxY = Math.max(0, panelFlick.contentHeight - panelFlick.height)
+        panelFlick.contentY = Math.max(0, Math.min(maxY, panelFlick.contentY + dy * Style.space(56)))
+      }
       onTextKey: function(t) {
         if (t === "r" || t === "R") root.refresh()
+        else if (t === "[") root.selectGpu(-1)
+        else if (t === "]") root.selectGpu(1)
       }
 
-      Column {
-        id: mainLayout
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.top: parent.top
-        spacing: Style.space(10)
+      Flickable {
+        id: panelFlick
+        anchors.fill: parent
+        contentWidth: width
+        contentHeight: mainLayout.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        flickableDirection: Flickable.VerticalFlick
+        interactive: contentHeight > height
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+        Column {
+          id: mainLayout
+          width: panelFlick.width
+          spacing: Style.space(10)
 
         // ------------------ HERO HEADER ------------------
         Item {
@@ -268,6 +313,63 @@ Panel {
               duration: 800
               loops: Animation.Infinite
               running: root.isUpdating
+            }
+          }
+        }
+
+        // ------------------ GPU DEVICE SWITCHER ------------------
+        Row {
+          id: gpuSelectorRow
+          visible: root.gpus.length > 1
+          width: parent.width
+          spacing: Style.space(8)
+
+          Repeater {
+            model: root.gpus
+
+            delegate: BorderSurface {
+              readonly property bool isSelected: index === root.selectedGpuIndex
+              readonly property bool isHovered: gpuSelectorMouse.containsMouse
+              width: (gpuSelectorRow.width - gpuSelectorRow.spacing * (root.gpus.length - 1)) / root.gpus.length
+              implicitHeight: gpuSelectorLabel.implicitHeight + Style.space(10)
+              radius: Style.cornerRadius
+              color: isSelected
+                ? Style.selectedFillFor(root.foreground, root.foreground)
+                : (isHovered ? Style.hoverFillFor(root.foreground, root.foreground) : "transparent")
+              borderSpec: isSelected
+                ? Border.controlSpec("selected", Color.accent, Color.accent)
+                : Border.controlSpec("normal", root.dim, Color.accent)
+
+              Row {
+                id: gpuSelectorLabel
+                anchors.centerIn: parent
+                spacing: Style.space(6)
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "GPU " + (index + 1)
+                  color: isSelected ? root.foreground : root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: isSelected
+                }
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: root.shortBusId(modelData.pciBusId)
+                  color: isSelected ? Color.accent : root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+              }
+
+              MouseArea {
+                id: gpuSelectorMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.selectedGpuIndex = index
+              }
             }
           }
         }
@@ -385,7 +487,7 @@ Panel {
 
                 Text {
                   textFormat: Text.PlainText
-                  text: (currentGpu.thermal ? currentGpu.thermal.coreTemp : 0.0) + " °C"
+                  text: root.metricText(currentGpu.thermal ? currentGpu.thermal.coreTemp : null, " °C")
                   color: (currentGpu.thermal && currentGpu.thermal.coreTemp >= 80) ? root.urgent : root.foreground
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.title
@@ -394,7 +496,7 @@ Panel {
 
                 Text {
                   textFormat: Text.PlainText
-                  text: "Hotspot: " + (currentGpu.thermal ? currentGpu.thermal.hotspotTemp : 0.0) + " °C"
+                  text: "Hotspot: " + root.metricText(currentGpu.thermal ? currentGpu.thermal.hotspotTemp : null, " °C")
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
@@ -504,7 +606,7 @@ Panel {
 
                 Text {
                   textFormat: Text.PlainText
-                  text: (currentGpu.thermal ? currentGpu.thermal.fanPwmPercent : 0) + " %"
+                  text: root.metricText(currentGpu.thermal ? currentGpu.thermal.fanPwmPercent : null, " %")
                   color: (currentGpu.thermal && currentGpu.thermal.fanPwmPercent >= 85) ? root.urgent : root.foreground
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.title
@@ -571,7 +673,7 @@ Panel {
 
                 Text {
                   textFormat: Text.PlainText
-                  text: "Draw: " + (currentGpu.thermal ? currentGpu.thermal.powerWatts : 25) + " W"
+                  text: "Draw: " + root.metricText(currentGpu.thermal ? currentGpu.thermal.powerWatts : null, " W")
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
@@ -1007,13 +1109,16 @@ Panel {
         Text {
           textFormat: Text.PlainText
           width: parent.width
-          text: "Tip: Press 'R' to refresh · Click any power or fan preset to apply tuning instantly"
+          text: root.gpus.length > 1
+            ? "Tip: Choose a GPU above or use '[' and ']' · Press 'R' to refresh"
+            : "Tip: Press 'R' to refresh · Click any power or fan preset to apply tuning instantly"
           color: Qt.darker(root.dim, 1.3)
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           horizontalAlignment: Text.AlignHCenter
           wrapMode: Text.Wrap
         }
+      }
       }
     }
   }

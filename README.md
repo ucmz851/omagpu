@@ -20,6 +20,7 @@ An advanced hardware telemetry dashboard, DPM power governor tuner, acoustic fan
 - **📈 Rolling Telemetry Sparklines:** Built-in 30-second live historical graph tracking temperature and VRAM spikes in real time.
 - **🧩 Graphics Stack & Topology:** Reports GPU Model, ASIC Family, VBIOS version, PCIe Link Speed/Width, Resizable BAR, Vulkan 1.3/1.4 instance versions, and Mesa/OpenGL versions.
 - **🔍 Active GPU Process Monitor:** Identifies live processes utilizing the `/dev/dri` render node (e.g. Hyprland, Chromium, Games) with dedicated RSS memory allocations.
+- **🖥️ Multi-GPU Selection:** Detects every NVIDIA adapter independently, matches DRM devices by PCI bus ID, and provides a dedicated in-panel device switcher.
 
 ## Screenshots
 
@@ -71,6 +72,7 @@ omarchy restart shell
 | **Left-click** | Open or close the GPU control center |
 | **Middle-click** | Refresh telemetry metrics immediately |
 | **`R` while open** | Refresh telemetry metrics now |
+| **`[` / `]` while open** | Switch to the previous or next GPU |
 | **`Esc` while open** | Close panel |
 | **`Tab` / `Shift+Tab`** | Switch between panels in sequence |
 
@@ -125,6 +127,12 @@ Validate the plugin schema from a checkout:
 
 ```sh
 omarchy plugin validate .
+```
+
+Run the engine regression tests (live multi-GPU verification is enabled automatically on supported NVIDIA systems):
+
+```sh
+python -m unittest discover -s tests -v
 ```
 
 ## License

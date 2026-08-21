@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "ucmz851.omagpu",
   "name": "OmaGPU",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "ucmz851",
   "license": "MIT",
   "description": "High-performance GPU controller and hardware telemetry dashboard for Omarchy Quattro (LACT-inspired). Features DPM power governors, acoustic fan tuning, and graphics stack diagnostics.",
