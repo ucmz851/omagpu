@@ -189,7 +189,12 @@ Panel {
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
             text: "󰢮"
-            color: (currentGpu.thermal && currentGpu.thermal.coreTemp >= 80) ? root.urgent : Color.accent
+            color: {
+              if (currentGpu.thermal && (currentGpu.thermal.coreTemp >= 80 || currentGpu.thermal.fanPwmPercent >= 85)) return root.urgent
+              if (currentGpu.tuning && (currentGpu.tuning.performanceLevel === "high" || currentGpu.tuning.performanceLevel === "profile_peak")) return Color.accent
+              if (currentGpu.tuning && (currentGpu.tuning.performanceLevel === "low" || currentGpu.tuning.activeProfile.indexOf("Low") !== -1)) return "#87c095"
+              return Color.accent
+            }
             font.family: root.fontFamily
             font.pixelSize: Style.font.display
           }
@@ -365,7 +370,7 @@ Panel {
                   Text {
                     textFormat: Text.PlainText
                     text: "󰔏"
-                    color: Color.accent
+                    color: (currentGpu.thermal && currentGpu.thermal.coreTemp >= 80) ? root.urgent : ((currentGpu.thermal && currentGpu.thermal.coreTemp >= 68) ? Color.accent : "#87c095")
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.body
                   }
@@ -418,7 +423,7 @@ Panel {
                   Text {
                     textFormat: Text.PlainText
                     text: "󰍛"
-                    color: Color.accent
+                    color: (currentGpu.vram && currentGpu.vram.percent >= 90) ? root.urgent : ((currentGpu.vram && currentGpu.vram.percent >= 75) ? Color.accent : "#6aa6b2")
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.body
                   }
@@ -478,7 +483,13 @@ Panel {
                   Text {
                     textFormat: Text.PlainText
                     text: "󰈐"
-                    color: Color.accent
+                    color: {
+                      var fpwm = currentGpu.thermal ? currentGpu.thermal.fanPwmPercent : 0
+                      if (fpwm >= 85) return root.urgent
+                      if (fpwm >= 60) return Color.accent
+                      if (fpwm < 40) return "#87c095"
+                      return "#6aa6b2"
+                    }
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.body
                   }
@@ -494,7 +505,7 @@ Panel {
                 Text {
                   textFormat: Text.PlainText
                   text: (currentGpu.thermal ? currentGpu.thermal.fanPwmPercent : 0) + " %"
-                  color: root.foreground
+                  color: (currentGpu.thermal && currentGpu.thermal.fanPwmPercent >= 85) ? root.urgent : root.foreground
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.title
                   font.bold: true
@@ -531,7 +542,12 @@ Panel {
                   Text {
                     textFormat: Text.PlainText
                     text: "󰚥"
-                    color: Color.accent
+                    color: {
+                      var plevel = currentGpu.tuning ? currentGpu.tuning.performanceLevel : "auto"
+                      if (plevel === "high" || plevel === "profile_peak") return Color.accent
+                      if (plevel === "low") return "#87c095"
+                      return "#6aa6b2"
+                    }
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.body
                   }

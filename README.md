@@ -12,6 +12,7 @@ An advanced hardware telemetry monitor, power governor tuner, fan controller, an
 
 ## Highlights
 
+- **🎨 Multi-State Dynamic Colors:** Bar and panel icons dynamically change colors based on active power governors, fan acoustic speeds, and thermal levels.
 - **⚡ DPM Power & Clock Tuning:** Switch between dynamic **Auto**, **High Performance** (locked max clocks for low latency gaming), **Low Power / Silent** (battery saving), and **Peak Profile**.
 - **🌡️ Multi-Sensor Thermals:** Real-time Core Temperature (°C) and Hotspot / Junction Temperature (°C) with dynamic thermal warning states.
 - **💾 VRAM & GTT Memory Breakdown:** Live dedicated VRAM capacity progress bar and GTT system-shared memory allocations.
@@ -29,6 +30,17 @@ An advanced hardware telemetry monitor, power governor tuner, fan controller, an
   &nbsp;&nbsp;
   <img src="screenshots/hardware.png" alt="OmaGPU Hardware & Process Clients" width="280">
 </p>
+
+## Dynamic Status & Icon Colors
+
+The bar icon and panel telemetry gauges dynamically transition colors based on the GPU's operational state:
+
+| State Indicator | Color | Trigger Condition |
+| :--- | :--- | :--- |
+| **🟢 Eco / Silent** | Soft Green (`#87c095`) | `Low Power / Silent` or `Power Saving` DPM governor active. |
+| **🔵 Balanced Auto** | Cyan / Foreground (`#6aa6b2`) | Normal `Dynamic Auto` mode with stable thermals (<68°C) and moderate fan speeds. |
+| **🟡 High Performance / Warm** | Gold / Accent (`Color.accent`) | `High Performance`, `3D Gaming`, `Peak Profile`, Temp ≥ 68°C, or Fan PWM ≥ 60%. |
+| **🔴 Critical / Extreme Cooling** | Urgent Red (`Color.urgent`) | Thermal threshold ≥ 80°C, Fan PWM ≥ 85%, or Dedicated VRAM capacity ≥ 92%. |
 
 ## Multi-Vendor Hardware Support
 

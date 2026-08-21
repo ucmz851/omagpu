@@ -40,10 +40,34 @@ BarWidget {
   }
 
   function getStatusColor(panelItem) {
-    if (!panelItem || !panelItem.currentGpu || !panelItem.currentGpu.thermal) return root.bar ? root.bar.barForeground : Color.foreground
-    var temp = panelItem.currentGpu.thermal.coreTemp || 0
-    if (temp >= 80) return root.bar ? root.bar.urgent : Color.urgent
-    if (temp >= 68) return Color.accent
+    if (!panelItem || !panelItem.currentGpu) return root.bar ? root.bar.barForeground : Color.foreground
+    
+    var t = panelItem.currentGpu.thermal || {}
+    var v = panelItem.currentGpu.vram || {}
+    var tun = panelItem.currentGpu.tuning || {}
+
+    var temp = t.coreTemp || 0
+    var fanPwm = t.fanPwmPercent || 0
+    var vramPct = v.percent || 0
+    var perfLevel = tun.performanceLevel || "auto"
+    var profile = tun.activeProfile || "Auto"
+
+    // 1. Critical / High Heat or Extreme Fan Speed (Red / Urgent)
+    if (temp >= 80 || fanPwm >= 85 || vramPct >= 92) {
+      return root.bar ? root.bar.urgent : Color.urgent
+    }
+
+    // 2. High Performance / Gaming Profile / Warm (Gold / Accent)
+    if (perfLevel === "high" || perfLevel === "profile_peak" || profile.indexOf("High") !== -1 || profile.indexOf("Gaming") !== -1 || temp >= 68 || fanPwm >= 60) {
+      return Color.accent
+    }
+
+    // 3. Low Power / Eco / Quiet Mode (Soft Green)
+    if (perfLevel === "low" || profile.indexOf("Low") !== -1 || profile.indexOf("Saving") !== -1) {
+      return "#87c095"
+    }
+
+    // 4. Default Balanced State
     return root.bar ? root.bar.barForeground : Color.foreground
   }
 
