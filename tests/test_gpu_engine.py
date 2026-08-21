@@ -59,6 +59,16 @@ class PanelMultiGpuTests(unittest.TestCase):
         self.assertIn("onClicked: root.selectedGpuIndex = index", panel)
 
 
+class PanelLayoutTests(unittest.TestCase):
+    def test_capped_panel_content_is_clipped_and_scrollable(self):
+        panel = (REPO_ROOT / "Panel.qml").read_text()
+
+        self.assertIn("id: panelFlick", panel)
+        self.assertIn("contentHeight: mainLayout.implicitHeight", panel)
+        self.assertIn("clip: true", panel)
+        self.assertIn("interactive: contentHeight > height", panel)
+
+
 class LiveMultiGpuTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("nvidia-smi"), "nvidia-smi is required")
     def test_engine_reports_every_nvidia_gpu_with_real_telemetry(self):

@@ -175,6 +175,8 @@ Panel {
     }
   }
 
+  onActiveTabChanged: if (panelFlick) panelFlick.contentY = 0
+
   Component.onCompleted: root.refresh()
 
   KeyboardPanel {
@@ -194,18 +196,32 @@ Panel {
 
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
+      onMoveRequested: function(dx, dy) {
+        if (dy === 0) return
+        var maxY = Math.max(0, panelFlick.contentHeight - panelFlick.height)
+        panelFlick.contentY = Math.max(0, Math.min(maxY, panelFlick.contentY + dy * Style.space(56)))
+      }
       onTextKey: function(t) {
         if (t === "r" || t === "R") root.refresh()
         else if (t === "[") root.selectGpu(-1)
         else if (t === "]") root.selectGpu(1)
       }
 
-      Column {
-        id: mainLayout
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.top: parent.top
-        spacing: Style.space(10)
+      Flickable {
+        id: panelFlick
+        anchors.fill: parent
+        contentWidth: width
+        contentHeight: mainLayout.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        flickableDirection: Flickable.VerticalFlick
+        interactive: contentHeight > height
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+        Column {
+          id: mainLayout
+          width: panelFlick.width
+          spacing: Style.space(10)
 
         // ------------------ HERO HEADER ------------------
         Item {
@@ -1102,6 +1118,7 @@ Panel {
           horizontalAlignment: Text.AlignHCenter
           wrapMode: Text.Wrap
         }
+      }
       }
     }
   }
