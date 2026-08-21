@@ -4,7 +4,7 @@
 [![Multi-Vendor](https://img.shields.io/badge/GPU-AMD%20%7C%20NVIDIA%20%7C%20Intel-6aa6b2?style=flat-square)](https://github.com/ucmz851/omagpu)
 [![MIT License](https://img.shields.io/badge/license-MIT-7952b3?style=flat-square)](LICENSE)
 
-An advanced hardware telemetry monitor, power governor tuner, fan controller, and software stack inspector built natively for the **Omarchy Quattro bar** (inspired by LACT).
+An advanced hardware telemetry dashboard, DPM power governor tuner, acoustic fan controller, and graphics stack monitor built natively for the **Omarchy Quattro bar** (inspired by LACT).
 
 ![OmaGPU dashboard preview](preview.png)
 
@@ -18,8 +18,8 @@ An advanced hardware telemetry monitor, power governor tuner, fan controller, an
 - **💾 VRAM & GTT Memory Breakdown:** Live dedicated VRAM capacity progress bar and GTT system-shared memory allocations.
 - **💨 Acoustics & Fan PWM Tuning:** Switch between automatic VBIOS firmware curves and manual fixed PWM presets (`35% Silent`, `60% Balanced`, `80% Aggressive`, `100% Max`).
 - **📈 Rolling Telemetry Sparklines:** Built-in 30-second live historical graph tracking temperature and VRAM spikes in real time.
-- **🧩 Hardware & Software Stack:** Reports GPU Model, ASIC Family, VBIOS version, PCIe Link Speed/Width, Resizable BAR, Vulkan 1.3/1.4 instance versions, and Mesa/OpenGL versions.
-- **🔍 GPU Render Client Inspector:** Inspects active processes utilizing the `/dev/dri` render device (e.g. Hyprland, Chromium, Games) with dedicated RSS memory allocations.
+- **🧩 Graphics Stack & Topology:** Reports GPU Model, ASIC Family, VBIOS version, PCIe Link Speed/Width, Resizable BAR, Vulkan 1.3/1.4 instance versions, and Mesa/OpenGL versions.
+- **🔍 Active GPU Process Monitor:** Identifies live processes utilizing the `/dev/dri` render node (e.g. Hyprland, Chromium, Games) with dedicated RSS memory allocations.
 
 ## Screenshots
 

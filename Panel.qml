@@ -39,7 +39,7 @@ Panel {
     { label: "Telemetry", key: "telemetry" },
     { label: "Tuning & Power", key: "tuning" },
     { label: "Fan Control", key: "fans" },
-    { label: "Hardware & Software", key: "hardware" }
+    { label: "Hardware & Stack", key: "hardware" }
   ]
 
   function copyToClipboard(text) {
