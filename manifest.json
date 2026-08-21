@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "ucmz851.omagpu",
+  "name": "OmaGPU",
+  "version": "1.0.0",
+  "author": "ucmz851",
+  "license": "MIT",
+  "description": "Comprehensive GPU controller, hardware telemetry monitor, power/fan tuning, and software inspector for Omarchy Quattro (LACT-inspired).",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "OmaGPU",
+    "description": "Real-time GPU telemetry, VRAM usage, thermal gauges, power profile tuning, and process inspector.",
+    "category": "System",
+    "aliases": [
+      "gpu",
+      "graphics",
+      "vram",
+      "lact",
+      "nvidia",
+      "amdgpu",
+      "radeon",
+      "overclock",
+      "fan"
+    ],
+    "defaultSection": "right",
+    "allowMultiple": false
+  }
+}
