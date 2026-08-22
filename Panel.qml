@@ -45,7 +45,7 @@ Panel {
   function copyToClipboard(text) {
     if (!text) return
     Quickshell.execDetached(["wl-copy", "--", text])
-    root.copiedNotice = text
+    root.copiedNotice = "Copied: " + text
     noticeTimer.restart()
   }
 
@@ -285,7 +285,7 @@ Panel {
             id: noticeText
             textFormat: Text.PlainText
             anchors.centerIn: parent
-            text: "Copied: " + root.copiedNotice
+            text: root.copiedNotice
             color: Color.accent
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption

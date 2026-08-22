@@ -11,11 +11,14 @@ import re
 import json
 import time
 import subprocess
+import ctypes
 from pathlib import Path
 
 HOME = Path.home()
 HISTORY_FILE = HOME / ".config" / "omarchy" / "omagpu_history.json"
 MAX_HISTORY_POINTS = 30
+NVML_FAN_POLICY_MANUAL = 1
+NVML_ERR_NO_PERMISSION = 4
 
 def read_sysfs(path):
     try:
@@ -314,10 +317,141 @@ def update_history(primary_gpu):
 
     return history
 
+def nvidia_control_target(card_id):
+    if card_id.startswith("nvidia"):
+        return re.sub(r"\D", "", card_id) or "0"
+    dev_path = Path(f"/sys/class/drm/{card_id}/device")
+    driver_link = dev_path / "driver"
+    if driver_link.exists() and driver_link.resolve().name == "nvidia":
+        return dev_path.resolve().name
+    return None
+
+def run_self_pkexec(*args):
+    if os.geteuid() == 0:
+        return {"status": "error", "message": "Permission denied even as root"}
+    try:
+        res = subprocess.run(["pkexec", sys.executable, os.path.abspath(__file__)] + list(args), capture_output=True, text=True, timeout=90)
+        if res.returncode == 0 and res.stdout.strip():
+            return json.loads(res.stdout.strip())
+        if res.returncode in (126, 127):
+            return {"status": "error", "message": "Authentication cancelled"}
+        return {"status": "error", "message": (res.stderr.strip() or f"pkexec exited {res.returncode}")[:300]}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+def nvml_get_handle(lib, target):
+    handle = ctypes.c_void_p()
+    if target.isdigit():
+        rc = lib.nvmlDeviceGetHandleByIndex_v2(int(target), ctypes.byref(handle))
+    else:
+        rc = lib.nvmlDeviceGetHandleByPciBusId_v2(target.encode(), ctypes.byref(handle))
+    return handle if rc == 0 else None
+
+def set_nvidia_fan(target, pwm_val):
+    # returns None when NVML says no permission, caller re-runs itself under pkexec
+    try:
+        lib = ctypes.CDLL("libnvidia-ml.so.1")
+    except OSError:
+        return {"status": "error", "message": "libnvidia-ml.so.1 not found"}
+    if lib.nvmlInit_v2() != 0:
+        return {"status": "error", "message": "NVML init failed"}
+    try:
+        handle = nvml_get_handle(lib, target)
+        if handle is None:
+            return {"status": "error", "message": f"NVML device {target} not found"}
+        fan_count = ctypes.c_uint(0)
+        if lib.nvmlDeviceGetNumFans(handle, ctypes.byref(fan_count)) != 0 or fan_count.value == 0:
+            return {"status": "error", "message": "NVML reports no controllable fans"}
+
+        if pwm_val == "auto":
+            for fan in range(fan_count.value):
+                rc = lib.nvmlDeviceSetDefaultFanSpeed_v2(handle, fan)
+                if rc == NVML_ERR_NO_PERMISSION:
+                    return None
+                if rc != 0:
+                    return {"status": "error", "message": f"NVML error {rc} restoring fan {fan}"}
+            return {"status": "success", "mode": "auto", "method": "nvml"}
+
+        try:
+            pwm_num = max(0, min(255, int(pwm_val)))
+        except ValueError:
+            return {"status": "error", "message": f"Invalid PWM value: {pwm_val}"}
+        percent = round((pwm_num / 255.0) * 100)
+        min_pct = ctypes.c_uint(0)
+        max_pct = ctypes.c_uint(100)
+        if lib.nvmlDeviceGetMinMaxFanSpeed(handle, ctypes.byref(min_pct), ctypes.byref(max_pct)) == 0:
+            percent = max(min_pct.value, min(max_pct.value, percent))
+        for fan in range(fan_count.value):
+            lib.nvmlDeviceSetFanControlPolicy(handle, fan, NVML_FAN_POLICY_MANUAL)
+            rc = lib.nvmlDeviceSetFanSpeed_v2(handle, fan, percent)
+            if rc == NVML_ERR_NO_PERMISSION:
+                return None
+            if rc != 0:
+                return {"status": "error", "message": f"NVML error {rc} on fan {fan}"}
+        return {"status": "success", "pwm": pwm_num, "method": "nvml"}
+    finally:
+        lib.nvmlShutdown()
+
+def set_nvidia_performance(card_id, target, level):
+    if level not in {"auto", "high", "low", "profile_peak"}:
+        return {"status": "error", "message": f"{level} not supported on NVIDIA"}
+    if os.geteuid() != 0:
+        return run_self_pkexec("--set-power-profile", card_id, level)
+
+    def smi(*args):
+        return subprocess.run(["nvidia-smi", "-i", target] + list(args), capture_output=True, text=True, timeout=5.0)
+
+    def query(fields):
+        res = smi(f"--query-gpu={fields}", "--format=csv,noheader,nounits")
+        if res.returncode != 0 or not res.stdout.strip():
+            return None
+        return [v.strip() for v in res.stdout.strip().split(",")]
+
+    def watts(value):
+        return str(int(float(value)))
+
+    plan = []
+    if level == "auto":
+        plan = [["-rgc"], ["-rmc"]]
+        limits = query("power.default_limit")
+        if limits:
+            plan.append(["-pl", watts(limits[0])])
+    elif level in ("high", "profile_peak"):
+        clocks = query("clocks.max.graphics,clocks.max.memory")
+        if not clocks or len(clocks) < 2:
+            return {"status": "error", "message": "Could not query max clocks"}
+        plan = [["-lgc", f"{clocks[0]},{clocks[0]}"], ["-lmc", f"{clocks[1]},{clocks[1]}"]]
+        if level == "profile_peak":
+            limits = query("power.max_limit")
+            if limits:
+                plan.append(["-pl", watts(limits[0])])
+    elif level == "low":
+        res = smi("--query-supported-clocks=graphics", "--format=csv,noheader,nounits")
+        if res.returncode != 0 or not res.stdout.strip():
+            return {"status": "error", "message": "Could not query supported clocks"}
+        min_clock = res.stdout.strip().splitlines()[-1].strip()
+        plan = [["-rmc"], ["-lgc", f"{min_clock},{min_clock}"]]
+        limits = query("power.min_limit")
+        if limits:
+            plan.append(["-pl", watts(limits[0])])
+
+    failures = []
+    for cmd in plan:
+        res = smi(*cmd)
+        if res.returncode != 0:
+            failures.append(f"{cmd[0]}: {(res.stderr or res.stdout).strip()}")
+    if failures:
+        return {"status": "error", "message": "; ".join(failures)[:300]}
+    return {"status": "success", "level": level, "method": "nvidia-smi"}
+
 def set_performance_level(card_id, level):
     allowed_levels = {"auto", "low", "high", "profile_peak", "manual", "profile_standard", "profile_min_sclk", "profile_min_mclk"}
     if level not in allowed_levels:
         return {"status": "error", "message": f"Invalid DPM level: {level}"}
+
+    nv_target = nvidia_control_target(card_id)
+    if nv_target:
+        return set_nvidia_performance(card_id, nv_target, level)
 
     dev_path = Path(f"/sys/class/drm/{card_id}/device/power_dpm_force_performance_level")
     if dev_path.exists():
@@ -334,18 +468,16 @@ def set_performance_level(card_id, level):
             except Exception as e:
                 return {"status": "error", "message": str(e)}
 
-    # NVIDIA support
-    if card_id.startswith("nvidia"):
-        try:
-            if level == "high":
-                subprocess.run(["nvidia-smi", "-pm", "1"], check=True)
-            return {"status": "success", "level": level, "method": "nvidia-smi"}
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-
     return {"status": "error", "message": "Sysfs performance node not found"}
 
 def set_fan_pwm(card_id, pwm_val):
+    nv_target = nvidia_control_target(card_id)
+    if nv_target:
+        result = set_nvidia_fan(nv_target, pwm_val)
+        if result is None:
+            result = run_self_pkexec("--set-fan", card_id, str(pwm_val))
+        return result
+
     hwmon_dirs = list(Path(f"/sys/class/drm/{card_id}/device/hwmon").glob("hwmon*"))
     if hwmon_dirs:
         hdir = hwmon_dirs[0]
