@@ -153,9 +153,14 @@ def scan_gpus():
         power_watts = None
         power_cap_watts = None
         fan_mode_val = "Automatic VBIOS"
+        # A hwmon directory existing doesn't mean fan control exists — iGPUs/APUs
+        # (e.g. amdgpu on Cezanne) publish temp/power sensors but no pwm1 node,
+        # since the fan is wired to the system EC rather than the GPU.
+        supports_fan_control = False
 
         if hwmon_dirs:
             hdir = hwmon_dirs[0]
+            supports_fan_control = (hdir / "pwm1").exists() and (hdir / "pwm1_enable").exists()
             t1 = read_sysfs(hdir / "temp1_input")
             if t1 and t1.isdigit():
                 temp_c = round(int(t1) / 1000, 1)
@@ -206,6 +211,13 @@ def scan_gpus():
         vis_vram = int(read_sysfs(dev_path / "mem_info_vis_vram_total") or 0)
         rebar_enabled = vis_vram >= vram_total_bytes and vram_total_bytes > 0
 
+        # DPM/fan tuning via sysfs is an amdgpu feature. NVIDIA and Intel
+        # kernel drivers don't expose power_dpm_force_performance_level or
+        # a writable hwmon pwm1, so tuning controls can't work on those cards
+        # (this is true for NVIDIA laptop/Optimus GPUs even with the
+        # proprietary driver loaded).
+        supports_tuning = (dev_path / "power_dpm_force_performance_level").exists()
+
         gpus.append({
             "id": card.name,
             "vendor": vendor_name,
@@ -213,6 +225,8 @@ def scan_gpus():
             "driver": driver_sym,
             "vbios": vbios,
             "isPrimary": boot_vga,
+            "supportsTuning": supports_tuning,
+            "supportsFanControl": supports_fan_control,
             "pcie": pcie_info,
             "rebar": rebar_enabled,
             "vram": {
@@ -255,6 +269,8 @@ def scan_gpus():
                         "driver": f"nvidia {parts[1]}",
                         "vbios": parts[2],
                         "isPrimary": True,
+                        "supportsTuning": False,
+                        "supportsFanControl": False,
                         "pcie": "PCIe Gen 4 x16",
                         "rebar": True,
                         "vram": {
@@ -314,12 +330,18 @@ def update_history(primary_gpu):
 
     return history
 
+def get_driver(card_id):
+    driver_link = Path(f"/sys/class/drm/{card_id}/device/driver")
+    return driver_link.resolve().name if driver_link.exists() else None
+
 def set_performance_level(card_id, level):
     allowed_levels = {"auto", "low", "high", "profile_peak", "manual", "profile_standard", "profile_min_sclk", "profile_min_mclk"}
     if level not in allowed_levels:
         return {"status": "error", "message": f"Invalid DPM level: {level}"}
 
+    driver = get_driver(card_id)
     dev_path = Path(f"/sys/class/drm/{card_id}/device/power_dpm_force_performance_level")
+
     if dev_path.exists():
         # Try direct write first (fast path if udev permissions configured)
         try:
@@ -334,16 +356,24 @@ def set_performance_level(card_id, level):
             except Exception as e:
                 return {"status": "error", "message": str(e)}
 
-    # NVIDIA support
-    if card_id.startswith("nvidia"):
+    # NVIDIA support: nvidia-smi only exposes persistence mode, not the
+    # amdgpu-style DPM governors this plugin's presets are built around.
+    if driver == "nvidia" or card_id.startswith("nvidia"):
         try:
             if level == "high":
                 subprocess.run(["nvidia-smi", "-pm", "1"], check=True)
-            return {"status": "success", "level": level, "method": "nvidia-smi"}
+                return {"status": "success", "level": level, "method": "nvidia-smi"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
+        return {
+            "status": "error",
+            "message": "Not supported: NVIDIA has no DPM governors over sysfs (only persistence mode).",
+        }
 
-    return {"status": "error", "message": "Sysfs performance node not found"}
+    return {
+        "status": "error",
+        "message": f"Not supported: DPM governors are amdgpu-only (driver: {driver or 'unknown'})",
+    }
 
 def set_fan_pwm(card_id, pwm_val):
     hwmon_dirs = list(Path(f"/sys/class/drm/{card_id}/device/hwmon").glob("hwmon*"))
@@ -352,7 +382,7 @@ def set_fan_pwm(card_id, pwm_val):
         pwm_file = hdir / "pwm1"
         pwm_enable_file = hdir / "pwm1_enable"
 
-        if pwm_val == "auto":
+        if pwm_file.exists() and pwm_enable_file.exists() and pwm_val == "auto":
             # Direct write
             try:
                 pwm_enable_file.write_text("2")
@@ -364,7 +394,7 @@ def set_fan_pwm(card_id, pwm_val):
                     return {"status": "success", "mode": "auto", "method": "pkexec"}
                 except Exception as e:
                     return {"status": "error", "message": str(e)}
-        else:
+        elif pwm_file.exists() and pwm_enable_file.exists():
             try:
                 pwm_num = max(0, min(255, int(pwm_val)))
             except ValueError:
@@ -381,7 +411,17 @@ def set_fan_pwm(card_id, pwm_val):
                 except Exception as e:
                     return {"status": "error", "message": str(e)}
 
-    return {"status": "error", "message": "Hwmon fan control node not found"}
+    driver = get_driver(card_id)
+    if driver == "nvidia" or card_id.startswith("nvidia"):
+        return {
+            "status": "error",
+            "message": "Not supported: NVIDIA laptop GPUs have no writable fan PWM node (EC-controlled).",
+        }
+
+    return {
+        "status": "error",
+        "message": f"Not supported: no fan PWM node exposed (driver: {driver or 'unknown'})",
+    }
 
 def main():
     if len(sys.argv) > 1:
@@ -405,6 +445,8 @@ def main():
         "driver": "drm",
         "vbios": "N/A",
         "isPrimary": True,
+        "supportsTuning": False,
+        "supportsFanControl": False,
         "pcie": "PCIe Gen 3",
         "rebar": False,
         "vram": {"usedMb": 0, "totalMb": 1024, "percent": 0},

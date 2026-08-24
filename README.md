@@ -50,6 +50,28 @@ The bar icon and panel telemetry gauges dynamically transition colors based on t
 | **NVIDIA** | `nvidia` (NVML / nvidia-smi) | GPU %, VRAM, Core & Hotspot Temp, Fan Speed, Power Draw (Watts), Clock Frequencies. |
 | **Intel** | `i915` / `xe` (DRM sysfs) | Frequency Scaling (RP0/RPe/RPn), RC6 Power States, Package Temp, Arc Dedicated/Shared VRAM. |
 
+### Hybrid / laptop GPU notes
+
+Telemetry (temps, VRAM, clocks, busy %) is read for every GPU in the system, including
+hybrid/Optimus laptops with both an integrated and a discrete GPU. **Tuning controls
+are more limited than telemetry**, since they depend on kernel sysfs nodes that not
+every driver exposes:
+
+- **DPM power governors** (`power_dpm_force_performance_level`) are an `amdgpu`-only
+  interface. NVIDIA and Intel GPUs don't expose it, so the Tuning & Power tab is shown
+  read-only for those cards.
+- **Fan PWM control** (`hwmon/pwm1`) additionally requires the GPU to own its own fan.
+  Integrated GPUs/APUs (e.g. AMD Cezanne/Rembrandt/Phoenix) typically have thermal and
+  power sensors under `hwmon` but no PWM node, because the fan is wired to the laptop's
+  embedded controller rather than the GPU. Discrete NVIDIA laptop GPUs have the same
+  limitation on Linux — the vendor driver doesn't expose a writable fan curve on most
+  laptops.
+
+Each GPU reported by `gpu_engine.py` includes `supportsTuning` and `supportsFanControl`
+booleans reflecting exactly this, and the panel uses them to disable/explain controls
+per-GPU rather than showing a raw sysfs error. On systems with more than one GPU, a
+switcher above the tabs lets you pick which card's telemetry and controls are shown.
+
 ## Install
 
 OmaGPU requires Omarchy with shell plugin support.

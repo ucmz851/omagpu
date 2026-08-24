@@ -272,6 +272,44 @@ Panel {
           }
         }
 
+        // ------------------ GPU SWITCHER (hybrid/multi-GPU systems) ------------------
+        Row {
+          visible: root.gpus.length > 1
+          width: parent.width
+          spacing: Style.space(6)
+
+          Repeater {
+            model: root.gpus
+            delegate: BorderSurface {
+              readonly property bool isSelected: root.selectedGpuIndex === index
+              implicitWidth: gpuSwitchText.implicitWidth + Style.space(14)
+              implicitHeight: gpuSwitchText.implicitHeight + Style.space(8)
+              radius: Style.cornerRadius
+              color: isSelected ? Style.selectedFillFor(root.foreground, root.foreground) : "transparent"
+              borderSpec: isSelected
+                ? Border.controlSpec("selected", Color.accent, Color.accent)
+                : Border.controlSpec("normal", root.dim, Color.accent)
+
+              Text {
+                textFormat: Text.PlainText
+                id: gpuSwitchText
+                anchors.centerIn: parent
+                text: modelData.vendor + (modelData.supportsTuning ? "" : " (view only)")
+                color: isSelected ? root.foreground : root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: isSelected
+              }
+
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.selectedGpuIndex = index
+              }
+            }
+          }
+        }
+
         // ------------------ COPIED NOTICE BANNER ------------------
         BorderSurface {
           visible: root.copiedNotice !== ""
@@ -698,6 +736,30 @@ Panel {
             wrapMode: Text.Wrap
           }
 
+          // Unsupported GPU notice
+          BorderSurface {
+            visible: !Boolean(currentGpu.supportsTuning)
+            width: parent.width
+            implicitHeight: unsupportedTuningText.implicitHeight + Style.space(14)
+            color: "transparent"
+            radius: Style.cornerRadius
+            borderSpec: Border.controlSpec("normal", root.dim, root.dim)
+
+            Text {
+              id: unsupportedTuningText
+              textFormat: Text.PlainText
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.top: parent.top
+              anchors.margins: Style.space(8)
+              text: "Not supported: DPM power governors are amdgpu-only (" + (currentGpu.driver || "unknown") + " driver doesn't expose them)."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.Wrap
+            }
+          }
+
           // Power Profiles List
           Repeater {
             model: [
@@ -708,6 +770,7 @@ Panel {
             ]
 
             delegate: BorderSurface {
+              visible: Boolean(currentGpu.supportsTuning)
               readonly property bool isCurrent: Boolean(currentGpu && currentGpu.tuning && currentGpu.tuning.performanceLevel === modelData.id)
               width: parent.width
               implicitHeight: profCol.implicitHeight + Style.space(14)
@@ -796,8 +859,35 @@ Panel {
             wrapMode: Text.Wrap
           }
 
+          // Unsupported GPU notice
+          BorderSurface {
+            visible: !Boolean(currentGpu.supportsFanControl)
+            width: parent.width
+            implicitHeight: unsupportedFanText.implicitHeight + Style.space(14)
+            color: "transparent"
+            radius: Style.cornerRadius
+            borderSpec: Border.controlSpec("normal", root.dim, root.dim)
+
+            Text {
+              id: unsupportedFanText
+              textFormat: Text.PlainText
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.top: parent.top
+              anchors.margins: Style.space(8)
+              text: currentGpu.vendor === "NVIDIA"
+                ? "Not supported: NVIDIA laptop GPUs don't expose a fan PWM node — the fan is EC-controlled."
+                : "Not supported: no fan PWM node exposed (" + (currentGpu.driver || "unknown") + " driver) — normal for integrated GPUs."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.Wrap
+            }
+          }
+
           // Fan Speed Presets Grid
           Grid {
+            visible: Boolean(currentGpu.supportsFanControl)
             columns: 2
             width: parent.width
             spacing: Style.space(8)
