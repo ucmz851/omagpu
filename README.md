@@ -60,6 +60,21 @@ Telemetry (temperatures, VRAM, busy %, and power draw) is continuously sampled a
 * **Per-GPU Telemetry & History:** Each device maintains its own isolated 30-second rolling sparkline history.
 * **Hardware Capability Detection:** OmaGPU automatically determines whether a GPU supports DPM power governors or fan PWM control. Integrated APUs/iGPUs (where fans are motherboard EC-controlled) and laptop discrete GPUs cleanly display informational notes rather than failing.
 
+## Dependencies & Prerequisites
+
+Most distributions have these installed by default. To ensure all telemetry, process tracking, and tuning controls work:
+
+| Dependency | Purpose | Arch Linux | Fedora | Debian / Ubuntu |
+| :--- | :--- | :--- | :--- | :--- |
+| **`python`** (3.8+) | Telemetry engine | `python` | `python3` | `python3` |
+| **`polkit`** (`pkexec`) | Privileged tuning & fan control | `polkit` | `polkit` | `policykit-1` |
+| **`psmisc`** (`fuser`) | Active GPU process monitor | `psmisc` | `psmisc` | `psmisc` |
+| **`pciutils`** (`lspci`) | Hardware model resolution | `pciutils` | `pciutils` | `pciutils` |
+| **`wl-clipboard`** | Copy specs to Wayland clipboard | `wl-clipboard` | `wl-clipboard` | `wl-clipboard` |
+| **`vulkan-tools`** *(optional)* | Vulkan version inspector | `vulkan-tools` | `vulkan-tools` | `vulkan-tools` |
+| **`mesa-utils`** *(optional)* | OpenGL version inspector | `mesa-utils` | `mesa-demos` | `mesa-utils` |
+| **`nvidia-utils`** *(NVIDIA only)* | NVIDIA telemetry (`nvidia-smi`) | `nvidia-utils` | `xorg-x11-drv-nvidia-cuda` | `nvidia-utils-*` |
+
 ## Install
 
 OmaGPU requires Omarchy with shell plugin support.
