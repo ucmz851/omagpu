@@ -24,11 +24,13 @@ An advanced hardware telemetry dashboard, DPM power governor tuner, acoustic fan
 ## Screenshots
 
 <p align="center">
-  <img src="screenshots/telemetry.png" alt="OmaGPU Telemetry & Live Graphs" width="280">
+  <img src="screenshots/telemetry.png" alt="OmaGPU Telemetry & Live Graphs" width="220">
   &nbsp;&nbsp;
-  <img src="screenshots/tuning.png" alt="OmaGPU Power & DPM Governors" width="280">
+  <img src="screenshots/tuning.png" alt="OmaGPU Power & DPM Governors" width="220">
   &nbsp;&nbsp;
-  <img src="screenshots/hardware.png" alt="OmaGPU Hardware & Process Clients" width="280">
+  <img src="screenshots/hardware.png" alt="OmaGPU Hardware & Process Clients" width="220">
+  &nbsp;&nbsp;
+  <img src="screenshots/multi-gpu-selector.png" alt="OmaGPU Multi-GPU Selector" width="220">
 </p>
 
 ## Dynamic Status & Icon Colors
@@ -49,6 +51,14 @@ The bar icon and panel telemetry gauges dynamically transition colors based on t
 | **AMD** | `amdgpu` (DRM sysfs & hwmon) | GPU %, VRAM / GTT, Core & Hotspot Temp, Fan PWM, DPM Power States, Power Cap. |
 | **NVIDIA** | `nvidia` (NVML / nvidia-smi) | GPU %, VRAM, Core & Hotspot Temp, Fan Speed, Power Draw (Watts), Clock Frequencies. |
 | **Intel** | `i915` / `xe` (DRM sysfs) | Frequency Scaling (RP0/RPe/RPn), RC6 Power States, Package Temp, Arc Dedicated/Shared VRAM. |
+
+### Multi-GPU & Hybrid Laptop Architecture
+
+Telemetry (temperatures, VRAM, busy %, and power draw) is continuously sampled across every GPU in the system, including multi-adapter workstations and hybrid/Optimus laptops (e.g. AMD Ryzen APU + discrete NVIDIA GPU):
+
+* **Multi-GPU Selector:** An interactive selector bar appears at the top of the panel when multiple adapters are detected.
+* **Per-GPU Telemetry & History:** Each device maintains its own isolated 30-second rolling sparkline history.
+* **Hardware Capability Detection:** OmaGPU automatically determines whether a GPU supports DPM power governors or fan PWM control. Integrated APUs/iGPUs (where fans are motherboard EC-controlled) and laptop discrete GPUs cleanly display informational notes rather than failing.
 
 ## Install
 
@@ -71,6 +81,7 @@ omarchy restart shell
 | **Left-click** | Open or close the GPU control center |
 | **Middle-click** | Refresh telemetry metrics immediately |
 | **`R` while open** | Refresh telemetry metrics now |
+| **`[` / `]` while open** | Cycle between available GPUs (multi-GPU setups) |
 | **`Esc` while open** | Close panel |
 | **`Tab` / `Shift+Tab`** | Switch between panels in sequence |
 

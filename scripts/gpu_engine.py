@@ -10,12 +10,36 @@ import os
 import re
 import json
 import time
+import ctypes
 import subprocess
 from pathlib import Path
 
 HOME = Path.home()
 HISTORY_FILE = HOME / ".config" / "omarchy" / "omagpu_history.json"
 MAX_HISTORY_POINTS = 30
+NVML_FAN_POLICY_MANUAL = 1
+NVML_ERR_NO_PERMISSION = 4
+
+NVIDIA_QUERY_FIELDS = [
+    "index",
+    "pci.bus_id",
+    "gpu_uuid",
+    "gpu_name",
+    "driver_version",
+    "vbios_version",
+    "memory.used",
+    "memory.total",
+    "utilization.gpu",
+    "temperature.gpu",
+    "fan.speed",
+    "power.draw",
+    "power.limit",
+    "clocks.current.graphics",
+    "clocks.current.memory",
+    "pcie.link.gen.current",
+    "pcie.link.width.current",
+]
+
 
 def read_sysfs(path):
     try:
@@ -25,6 +49,130 @@ def read_sysfs(path):
     except Exception:
         pass
     return None
+
+
+def normalize_pci_bus_id(bus_id):
+    if not bus_id:
+        return ""
+    clean = bus_id.strip()
+    parts = clean.split(":")
+    if len(parts) == 3:
+        domain = parts[0].zfill(8)
+        return f"{domain}:{parts[1].zfill(2)}:{parts[2]}".upper()
+    if len(parts) == 2:
+        return f"00000000:{parts[0].zfill(2)}:{parts[1]}".upper()
+    return clean.upper()
+
+
+def parse_optional_float(value):
+    if value is None:
+        return None
+    cleaned = str(value).strip().replace("[Not Supported]", "").replace("N/A", "")
+    if not cleaned:
+        return None
+    try:
+        return round(float(cleaned), 1)
+    except ValueError:
+        return None
+
+
+def parse_optional_int(value):
+    if value is None:
+        return None
+    cleaned = str(value).strip().replace("[Not Supported]", "").replace("N/A", "")
+    if not cleaned:
+        return None
+    try:
+        return int(float(cleaned))
+    except ValueError:
+        return None
+
+
+def parse_nvidia_smi_output(raw_output):
+    gpus = []
+    lines = [line.strip() for line in raw_output.strip().splitlines() if line.strip()]
+    for line in lines:
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < len(NVIDIA_QUERY_FIELDS):
+            continue
+        values = dict(zip(NVIDIA_QUERY_FIELDS, parts))
+        idx = int(values["index"]) if values["index"].isdigit() else len(gpus)
+        pci_bus_id = normalize_pci_bus_id(values["pci.bus_id"])
+        model_name = values["gpu_name"]
+        driver_ver = f"nvidia {values['driver_version']}" if values["driver_version"] else "nvidia"
+        vbios_ver = values["vbios_version"] if values["vbios_version"] != "N/A" else "Standard VBIOS"
+
+        used_mb = parse_optional_float(values["memory.used"]) or 0.0
+        total_mb = parse_optional_float(values["memory.total"]) or 1024.0
+        vram_pct = round((used_mb / total_mb) * 100, 1) if total_mb > 0 else 0.0
+
+        core_temp = parse_optional_float(values["temperature.gpu"])
+        hotspot_temp = round(core_temp + 8.0, 1) if core_temp is not None else None
+        fan_speed = parse_optional_int(values["fan.speed"])
+
+        cur_gen = values.get("pcie.link.gen.current", "4")
+        cur_width = values.get("pcie.link.width.current", "16")
+        pcie_info = f"PCIe Gen {cur_gen} x{cur_width}" if cur_gen != "N/A" else "PCIe Gen 4 x16"
+
+        gpus.append({
+            "id": f"nvidia{idx}",
+            "index": idx,
+            "uuid": values.get("gpu_uuid"),
+            "pciBusId": pci_bus_id,
+            "drmCard": None,
+            "vendor": "NVIDIA",
+            "model": model_name,
+            "driver": driver_ver,
+            "vbios": vbios_ver,
+            "isPrimary": idx == 0,
+            "supportsTuning": True,
+            "supportsFanControl": fan_speed is not None,
+            "pcie": pcie_info,
+            "rebar": True,
+            "vram": {
+                "usedMb": used_mb,
+                "totalMb": total_mb,
+                "percent": vram_pct,
+            },
+            "gtt": {"usedMb": 0.0, "totalMb": 0.0},
+            "gpuBusyPercent": parse_optional_int(values["utilization.gpu"]) or 0,
+            "memBusyPercent": 0,
+            "thermal": {
+                "coreTemp": core_temp,
+                "hotspotTemp": hotspot_temp,
+                "fanRpm": None,
+                "fanPwmPercent": fan_speed,
+                "powerWatts": parse_optional_float(values["power.draw"]),
+                "powerCapWatts": parse_optional_float(values["power.limit"]),
+            },
+            "tuning": {
+                "performanceLevel": "auto",
+                "activeProfile": "Auto (Dynamic)",
+                "fanControlMode": "Automatic (NVIDIA)",
+            },
+        })
+
+    return gpus
+
+
+def query_nvidia_gpus():
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                f"--query-gpu={','.join(NVIDIA_QUERY_FIELDS)}",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+        if result.returncode == 0:
+            return parse_nvidia_smi_output(result.stdout)
+    except (FileNotFoundError, subprocess.SubprocessError):
+        pass
+    return []
+
 
 def detect_vulkan_version():
     try:
@@ -37,6 +185,7 @@ def detect_vulkan_version():
         pass
     return "Vulkan 1.3 (Mesa Native)"
 
+
 def detect_opengl_version():
     try:
         res = subprocess.run(["glxinfo", "-B"], capture_output=True, text=True, timeout=1.5)
@@ -47,6 +196,7 @@ def detect_opengl_version():
     except Exception:
         pass
     return "OpenGL 4.6 (Mesa)"
+
 
 def get_gpu_processes():
     processes = []
@@ -62,7 +212,7 @@ def get_gpu_processes():
                     seen_pids.add(pid)
                     comm_path = Path(f"/proc/{pid}/comm")
                     name = comm_path.read_text().strip() if comm_path.exists() else "Unknown"
-                    
+
                     mem_mb = 0
                     statm_path = Path(f"/proc/{pid}/statm")
                     if statm_path.exists():
@@ -71,7 +221,7 @@ def get_gpu_processes():
                             mem_mb = round((pages * 4096) / (1024 * 1024), 1)
                         except Exception:
                             pass
-                    
+
                     processes.append({
                         "pid": int(pid),
                         "name": name,
@@ -84,8 +234,12 @@ def get_gpu_processes():
     processes.sort(key=lambda x: x["mem_mb"], reverse=True)
     return processes[:8]
 
+
 def scan_gpus():
     gpus = []
+    nvidia_gpus = query_nvidia_gpus()
+    nvidia_by_bus = {gpu["pciBusId"]: gpu for gpu in nvidia_gpus}
+    matched_nvidia_indices = set()
     drm_cards = sorted(Path("/sys/class/drm").glob("card[0-9]*"))
     actual_cards = [c for c in drm_cards if "-" not in c.name]
 
@@ -107,9 +261,20 @@ def scan_gpus():
         elif "0x8086" in vendor_id.lower():
             vendor_name = "Intel"
 
+        pci_bus_id = normalize_pci_bus_id(dev_path.resolve().name)
+        if vendor_name == "NVIDIA" and pci_bus_id in nvidia_by_bus:
+            nvidia_gpu = dict(nvidia_by_bus[pci_bus_id])
+            nvidia_gpu["drmCard"] = card.name
+            nvidia_gpu["isPrimary"] = boot_vga
+            gpus.append(nvidia_gpu)
+            matched_nvidia_indices.add(nvidia_gpu["index"])
+            continue
+
         model_name = f"{vendor_name} Graphics ({device_id})"
         try:
-            lspci_res = subprocess.run(["lspci", "-s", dev_path.resolve().name.split(":")[-1] if ":" in dev_path.resolve().name else "01:00.0"], capture_output=True, text=True, timeout=1.0)
+            # Keep bus:slot.func so lspci doesn't match wrong device across different buses (PR #6)
+            pci_slot = ":".join(dev_path.resolve().name.split(":")[-2:]) if ":" in dev_path.resolve().name else "01:00.0"
+            lspci_res = subprocess.run(["lspci", "-s", pci_slot], capture_output=True, text=True, timeout=1.0)
             for line in lspci_res.stdout.splitlines():
                 if "VGA" in line or "3D" in line or "Display" in line:
                     parts = line.split(":", 2)
@@ -153,13 +318,15 @@ def scan_gpus():
         power_watts = None
         power_cap_watts = None
         fan_mode_val = "Automatic VBIOS"
+        supports_fan_control = False
 
         if hwmon_dirs:
             hdir = hwmon_dirs[0]
+            supports_fan_control = (hdir / "pwm1").exists() and (hdir / "pwm1_enable").exists()
             t1 = read_sysfs(hdir / "temp1_input")
             if t1 and t1.isdigit():
                 temp_c = round(int(t1) / 1000, 1)
-            
+
             t2 = read_sysfs(hdir / "temp2_input")
             if t2 and t2.isdigit():
                 hotspot_c = round(int(t2) / 1000, 1)
@@ -188,7 +355,8 @@ def scan_gpus():
 
         perf_level = read_sysfs(dev_path / "power_dpm_force_performance_level") or "auto"
         power_profile = read_sysfs(dev_path / "pp_power_profile_mode") or "Default"
-        
+        supports_tuning = (dev_path / "power_dpm_force_performance_level").exists()
+
         active_profile_label = "Auto (Dynamic)"
         if "3D_FULL_SCREEN" in power_profile and "*" in power_profile.split("3D_FULL_SCREEN")[0]:
             active_profile_label = "3D Gaming"
@@ -208,11 +376,17 @@ def scan_gpus():
 
         gpus.append({
             "id": card.name,
+            "index": len(gpus),
+            "uuid": None,
+            "pciBusId": pci_bus_id,
+            "drmCard": card.name,
             "vendor": vendor_name,
             "model": model_name,
             "driver": driver_sym,
             "vbios": vbios,
             "isPrimary": boot_vga,
+            "supportsTuning": supports_tuning,
+            "supportsFanControl": supports_fan_control,
             "pcie": pcie_info,
             "rebar": rebar_enabled,
             "vram": {
@@ -241,92 +415,218 @@ def scan_gpus():
             }
         })
 
-    # NVIDIA Fallback
-    if not any(g["vendor"] == "NVIDIA" for g in gpus):
-        try:
-            res = subprocess.run(["nvidia-smi", "--query-gpu=gpu_name,driver_version,vbios_version,memory.used,memory.total,utilization.gpu,temperature.gpu,fan.speed,power.draw", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=1.0)
-            if res.returncode == 0:
-                parts = [p.strip() for p in res.stdout.strip().split(",")]
-                if len(parts) >= 8:
-                    gpus.append({
-                        "id": "nvidia0",
-                        "vendor": "NVIDIA",
-                        "model": parts[0],
-                        "driver": f"nvidia {parts[1]}",
-                        "vbios": parts[2],
-                        "isPrimary": True,
-                        "pcie": "PCIe Gen 4 x16",
-                        "rebar": True,
-                        "vram": {
-                            "usedMb": float(parts[3]),
-                            "totalMb": float(parts[4]),
-                            "percent": round((float(parts[3])/float(parts[4]))*100, 1)
-                        },
-                        "gtt": {"usedMb": 0, "totalMb": 0},
-                        "gpuBusyPercent": int(parts[5]),
-                        "memBusyPercent": 0,
-                        "thermal": {
-                            "coreTemp": float(parts[6]),
-                            "hotspotTemp": float(parts[6]) + 8.0,
-                            "fanRpm": None,
-                            "fanPwmPercent": int(parts[7]) if parts[7].isdigit() else 40,
-                            "powerWatts": float(parts[8]) if len(parts) > 8 else 50.0,
-                            "powerCapWatts": 250.0
-                        },
-                        "tuning": {
-                            "performanceLevel": "auto",
-                            "activeProfile": "Auto (Dynamic)",
-                            "fanControlMode": "Automatic"
-                        }
-                    })
-        except Exception:
-            pass
+    # Keep devices visible even when DRM has no card node for one of them
+    for nvidia_gpu in nvidia_gpus:
+        if nvidia_gpu["index"] not in matched_nvidia_indices:
+            gpus.append(nvidia_gpu)
 
     return gpus
 
-def update_history(primary_gpu):
-    history = {"temps": [], "vram": [], "gpu_busy": []}
+
+def empty_history():
+    return {"temps": [], "vram": [], "gpu_busy": []}
+
+
+def update_histories(gpus):
+    histories = {}
     if HISTORY_FILE.exists():
         try:
-            history = json.loads(HISTORY_FILE.read_text())
+            saved = json.loads(HISTORY_FILE.read_text())
+            if isinstance(saved.get("gpus"), dict):
+                histories = saved["gpus"]
+            elif gpus and all(key in saved for key in ("temps", "vram", "gpu_busy")):
+                histories[gpus[0]["id"]] = saved
         except Exception:
-            history = {"temps": [], "vram": [], "gpu_busy": []}
+            histories = {}
 
-    temp_val = primary_gpu["thermal"]["coreTemp"]
-    vram_val = primary_gpu["vram"]["percent"]
-    gpu_busy_val = primary_gpu["gpuBusyPercent"]
+    active_ids = {gpu["id"] for gpu in gpus}
+    histories = {gpu_id: history for gpu_id, history in histories.items() if gpu_id in active_ids}
+    for gpu in gpus:
+        history = histories.setdefault(gpu["id"], empty_history())
+        temp_val = gpu["thermal"].get("coreTemp")
+        if temp_val is not None:
+            history["temps"].append(temp_val)
+        vram_pct = gpu["vram"].get("percent")
+        if vram_pct is not None:
+            history["vram"].append(vram_pct)
+        gpu_busy_val = gpu.get("gpuBusyPercent")
+        if gpu_busy_val is not None:
+            history["gpu_busy"].append(gpu_busy_val)
 
-    history["temps"].append(temp_val)
-    history["vram"].append(vram_val)
-    history["gpu_busy"].append(gpu_busy_val)
-
-    history["temps"] = history["temps"][-MAX_HISTORY_POINTS:]
-    history["vram"] = history["vram"][-MAX_HISTORY_POINTS:]
-    history["gpu_busy"] = history["gpu_busy"][-MAX_HISTORY_POINTS:]
+        history["temps"] = history["temps"][-MAX_HISTORY_POINTS:]
+        history["vram"] = history["vram"][-MAX_HISTORY_POINTS:]
+        history["gpu_busy"] = history["gpu_busy"][-MAX_HISTORY_POINTS:]
 
     try:
         HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
         tmp = HISTORY_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(history))
+        tmp.write_text(json.dumps({"version": 2, "gpus": histories}))
         os.replace(tmp, HISTORY_FILE)
     except Exception:
         pass
 
-    return history
+    return histories
+
+
+def get_driver(card_id):
+    if card_id.startswith("nvidia"):
+        return "nvidia"
+    driver_link = Path(f"/sys/class/drm/{card_id}/device/driver")
+    return driver_link.resolve().name if driver_link.exists() else None
+
+
+def nvidia_control_target(card_id):
+    if card_id.startswith("nvidia"):
+        return re.sub(r"\D", "", card_id) or "0"
+    dev_path = Path(f"/sys/class/drm/{card_id}/device")
+    driver_link = dev_path / "driver"
+    if driver_link.exists() and driver_link.resolve().name == "nvidia":
+        return dev_path.resolve().name
+    return None
+
+
+def run_self_pkexec(*args):
+    if os.geteuid() == 0:
+        return {"status": "error", "message": "Permission denied even as root"}
+    try:
+        res = subprocess.run(
+            ["pkexec", sys.executable, os.path.abspath(__file__)] + list(args),
+            capture_output=True,
+            text=True,
+            timeout=90
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return json.loads(res.stdout.strip())
+        if res.returncode in (126, 127):
+            return {"status": "error", "message": "Authentication cancelled"}
+        return {"status": "error", "message": (res.stderr.strip() or f"pkexec exited {res.returncode}")[:300]}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def nvml_get_handle(lib, target):
+    handle = ctypes.c_void_p()
+    if target.isdigit():
+        rc = lib.nvmlDeviceGetHandleByIndex_v2(int(target), ctypes.byref(handle))
+    else:
+        rc = lib.nvmlDeviceGetHandleByPciBusId_v2(target.encode(), ctypes.byref(handle))
+    return handle if rc == 0 else None
+
+
+def set_nvidia_fan(target, pwm_val):
+    try:
+        lib = ctypes.CDLL("libnvidia-ml.so.1")
+    except OSError:
+        return {"status": "error", "message": "libnvidia-ml.so.1 not found"}
+    if lib.nvmlInit_v2() != 0:
+        return {"status": "error", "message": "NVML init failed"}
+    try:
+        handle = nvml_get_handle(lib, target)
+        if handle is None:
+            return {"status": "error", "message": f"NVML device {target} not found"}
+        fan_count = ctypes.c_uint(0)
+        if lib.nvmlDeviceGetNumFans(handle, ctypes.byref(fan_count)) != 0 or fan_count.value == 0:
+            return {"status": "error", "message": "NVML reports no controllable fans"}
+
+        if pwm_val == "auto":
+            for fan in range(fan_count.value):
+                rc = lib.nvmlDeviceSetDefaultFanSpeed_v2(handle, fan)
+                if rc == NVML_ERR_NO_PERMISSION:
+                    return None
+                if rc != 0:
+                    return {"status": "error", "message": f"NVML error {rc} restoring fan {fan}"}
+            return {"status": "success", "mode": "auto", "method": "nvml"}
+
+        try:
+            pwm_num = max(0, min(255, int(pwm_val)))
+        except ValueError:
+            return {"status": "error", "message": f"Invalid PWM value: {pwm_val}"}
+        percent = round((pwm_num / 255.0) * 100)
+        min_pct = ctypes.c_uint(0)
+        max_pct = ctypes.c_uint(100)
+        if lib.nvmlDeviceGetMinMaxFanSpeed(handle, ctypes.byref(min_pct), ctypes.byref(max_pct)) == 0:
+            percent = max(min_pct.value, min(max_pct.value, percent))
+        for fan in range(fan_count.value):
+            lib.nvmlDeviceSetFanControlPolicy(handle, fan, NVML_FAN_POLICY_MANUAL)
+            rc = lib.nvmlDeviceSetFanSpeed_v2(handle, fan, percent)
+            if rc == NVML_ERR_NO_PERMISSION:
+                return None
+            if rc != 0:
+                return {"status": "error", "message": f"NVML error {rc} on fan {fan}"}
+        return {"status": "success", "pwm": pwm_num, "method": "nvml"}
+    finally:
+        lib.nvmlShutdown()
+
+
+def set_nvidia_performance(card_id, target, level):
+    if level not in {"auto", "high", "low", "profile_peak"}:
+        return {"status": "error", "message": f"{level} not supported on NVIDIA"}
+    if os.geteuid() != 0:
+        return run_self_pkexec("--set-power-profile", card_id, level)
+
+    def smi(*args):
+        return subprocess.run(["nvidia-smi", "-i", target] + list(args), capture_output=True, text=True, timeout=5.0)
+
+    def query(fields):
+        res = smi(f"--query-gpu={fields}", "--format=csv,noheader,nounits")
+        if res.returncode != 0 or not res.stdout.strip():
+            return None
+        return [v.strip() for v in res.stdout.strip().split(",")]
+
+    def watts(value):
+        return str(int(float(value)))
+
+    plan = []
+    if level == "auto":
+        plan = [["-rgc"], ["-rmc"]]
+        limits = query("power.default_limit")
+        if limits:
+            plan.append(["-pl", watts(limits[0])])
+    elif level in ("high", "profile_peak"):
+        clocks = query("clocks.max.graphics,clocks.max.memory")
+        if not clocks or len(clocks) < 2:
+            return {"status": "error", "message": "Could not query max clocks"}
+        plan = [["-lgc", f"{clocks[0]},{clocks[0]}"], ["-lmc", f"{clocks[1]},{clocks[1]}"]]
+        if level == "profile_peak":
+            limits = query("power.max_limit")
+            if limits:
+                plan.append(["-pl", watts(limits[0])])
+    elif level == "low":
+        res = smi("--query-supported-clocks=graphics", "--format=csv,noheader,nounits")
+        if res.returncode != 0 or not res.stdout.strip():
+            return {"status": "error", "message": "Could not query supported clocks"}
+        min_clock = res.stdout.strip().splitlines()[-1].strip()
+        plan = [["-rmc"], ["-lgc", f"{min_clock},{min_clock}"]]
+        limits = query("power.min_limit")
+        if limits:
+            plan.append(["-pl", watts(limits[0])])
+
+    failures = []
+    for cmd in plan:
+        res = smi(*cmd)
+        if res.returncode != 0:
+            failures.append(f"{cmd[0]}: {(res.stderr or res.stdout).strip()}")
+    if failures:
+        return {"status": "error", "message": "; ".join(failures)[:300]}
+    return {"status": "success", "level": level, "method": "nvidia-smi"}
+
 
 def set_performance_level(card_id, level):
     allowed_levels = {"auto", "low", "high", "profile_peak", "manual", "profile_standard", "profile_min_sclk", "profile_min_mclk"}
     if level not in allowed_levels:
         return {"status": "error", "message": f"Invalid DPM level: {level}"}
 
+    nv_target = nvidia_control_target(card_id)
+    if nv_target:
+        return set_nvidia_performance(card_id, nv_target, level)
+
+    driver = get_driver(card_id)
     dev_path = Path(f"/sys/class/drm/{card_id}/device/power_dpm_force_performance_level")
     if dev_path.exists():
-        # Try direct write first (fast path if udev permissions configured)
         try:
             dev_path.write_text(level)
             return {"status": "success", "level": level, "method": "direct"}
         except (PermissionError, OSError):
-            # Fallback to pkexec
             cmd = f"echo '{level}' > {dev_path}"
             try:
                 subprocess.run(["pkexec", "sh", "-c", cmd], check=True, capture_output=True, text=True)
@@ -334,26 +634,27 @@ def set_performance_level(card_id, level):
             except Exception as e:
                 return {"status": "error", "message": str(e)}
 
-    # NVIDIA support
-    if card_id.startswith("nvidia"):
-        try:
-            if level == "high":
-                subprocess.run(["nvidia-smi", "-pm", "1"], check=True)
-            return {"status": "success", "level": level, "method": "nvidia-smi"}
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
+    return {
+        "status": "error",
+        "message": f"Not supported: DPM governors are amdgpu-only (driver: {driver or 'unknown'})",
+    }
 
-    return {"status": "error", "message": "Sysfs performance node not found"}
 
 def set_fan_pwm(card_id, pwm_val):
+    nv_target = nvidia_control_target(card_id)
+    if nv_target:
+        result = set_nvidia_fan(nv_target, pwm_val)
+        if result is None:
+            result = run_self_pkexec("--set-fan", card_id, str(pwm_val))
+        return result
+
     hwmon_dirs = list(Path(f"/sys/class/drm/{card_id}/device/hwmon").glob("hwmon*"))
     if hwmon_dirs:
         hdir = hwmon_dirs[0]
         pwm_file = hdir / "pwm1"
         pwm_enable_file = hdir / "pwm1_enable"
 
-        if pwm_val == "auto":
-            # Direct write
+        if pwm_file.exists() and pwm_enable_file.exists() and pwm_val == "auto":
             try:
                 pwm_enable_file.write_text("2")
                 return {"status": "success", "mode": "auto", "method": "direct"}
@@ -364,7 +665,7 @@ def set_fan_pwm(card_id, pwm_val):
                     return {"status": "success", "mode": "auto", "method": "pkexec"}
                 except Exception as e:
                     return {"status": "error", "message": str(e)}
-        else:
+        elif pwm_file.exists() and pwm_enable_file.exists():
             try:
                 pwm_num = max(0, min(255, int(pwm_val)))
             except ValueError:
@@ -381,7 +682,12 @@ def set_fan_pwm(card_id, pwm_val):
                 except Exception as e:
                     return {"status": "error", "message": str(e)}
 
-    return {"status": "error", "message": "Hwmon fan control node not found"}
+    driver = get_driver(card_id)
+    return {
+        "status": "error",
+        "message": f"Not supported: no fan PWM node exposed (driver: {driver or 'unknown'})",
+    }
+
 
 def main():
     if len(sys.argv) > 1:
@@ -400,11 +706,17 @@ def main():
     gpus = scan_gpus()
     primary = gpus[0] if gpus else {
         "id": "card0",
+        "index": 0,
+        "uuid": None,
+        "pciBusId": "00000000:00:00.0",
+        "drmCard": "card0",
         "vendor": "Generic",
         "model": "Standard Linux Graphics",
         "driver": "drm",
         "vbios": "N/A",
         "isPrimary": True,
+        "supportsTuning": False,
+        "supportsFanControl": False,
         "pcie": "PCIe Gen 3",
         "rebar": False,
         "vram": {"usedMb": 0, "totalMb": 1024, "percent": 0},
@@ -415,7 +727,8 @@ def main():
         "tuning": {"performanceLevel": "auto", "activeProfile": "Auto (Dynamic)", "fanControlMode": "Automatic"}
     }
 
-    history = update_history(primary)
+    histories = update_histories(gpus)
+    history = histories.get(primary["id"], empty_history())
     processes = get_gpu_processes()
     vulkan_ver = detect_vulkan_version()
     opengl_ver = detect_opengl_version()
@@ -426,6 +739,7 @@ def main():
         "gpus": gpus,
         "primary": primary,
         "history": history,
+        "histories": histories,
         "processes": processes,
         "software": {
             "vulkan": vulkan_ver,
@@ -436,6 +750,7 @@ def main():
     }
 
     print(json.dumps(output, indent=2))
+
 
 if __name__ == "__main__":
     main()
